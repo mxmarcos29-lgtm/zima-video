@@ -249,7 +249,9 @@ async function probe(abs) {
       format: (j.format && j.format.format_name) || '',
       bitrate: parseInt((j.format && j.format.bit_rate) || 0, 10),
       title: (j.format && j.format.tags && (j.format.tags.title || j.format.tags.TITLE)) || '',
-      video: v ? { codec: v.codec_name, profile: v.profile || '', level: v.level || 0, width: v.width, height: v.height, pix_fmt: v.pix_fmt || '', fps } : null,
+      start: parseFloat((j.format && j.format.start_time) || 0) || 0,
+      video: v ? { codec: v.codec_name, profile: v.profile || '', level: v.level || 0, width: v.width, height: v.height, pix_fmt: v.pix_fmt || '', fps,
+        start: parseFloat(v.start_time || (j.format && j.format.start_time) || 0) || 0 } : null,
       audio, subs,
     };
     probeCache.set(key, info);
@@ -353,12 +355,19 @@ async function serveProgressive(req, res, abs, q) {
   const audioIdx = parseInt(q.get('audio') || '0', 10) || 0;
   const h = parseInt(q.get('h') || '0', 10) || 0;
   const audioOnly = !info.video;
+  const L = mode === 'remux' && !audioOnly ? await landing(abs, t) : t;
 
   const build = (hw) => {
     const a = ['-hide_banner', '-loglevel', 'error', '-nostdin'];
     if (mode === 'transcode' && !audioOnly) a.push(...hwInputArgs(hw));
-    // no remux o cliente já pediu o tempo exato de um keyframe; a folga evita cair no keyframe anterior
-    if (t > 0) a.push('-ss', (mode === 'remux' ? t + 0.03 : t).toFixed(3));
+    const remuxVideo = mode === 'remux' && !audioOnly;
+    // Remux (vídeo copiado): o navegador ignora deslocamentos iniciais entre faixas no MP4 fragmentado,
+    // então áudio e vídeo precisam começar exatamente no mesmo instante: o áudio é cortado/preenchido
+    // com silêncio para começar no keyframe L, a linha do tempo é zerada em L (o cliente usa L como
+    // deslocamento) e o delay_moov grava edit lists que compensam o atraso dos B-frames.
+    if (remuxVideo) {
+      if (t > 0) a.push('-noaccurate_seek', '-ss', t.toFixed(3));
+    } else if (t > 0) a.push('-ss', t.toFixed(3));
     a.push('-i', abs);
     if (audioOnly) a.push('-vn'); else a.push('-map', '0:v:0');
     if (info.audio.length) a.push('-map', `0:a:${Math.min(audioIdx, info.audio.length - 1)}`);
@@ -366,12 +375,15 @@ async function serveProgressive(req, res, abs, q) {
       if (mode === 'remux') a.push('-c:v', 'copy');
       else a.push(...videoEncodeArgs(info, h, hw, 2));
     }
-    a.push(...AUDIO_ARGS, '-sn', '-dn', '-map_metadata', '-1', '-max_muxing_queue_size', '4096',
-      '-movflags', 'frag_keyframe+empty_moov+default_base_moof', '-frag_duration', '1000000', '-f', 'mp4', 'pipe:1');
+    if (remuxVideo && info.audio.length) a.push('-af', `aresample=48000:async=1:first_pts=${Math.round((L - t) * 48000)}`);
+    a.push(...AUDIO_ARGS, '-sn', '-dn', '-map_metadata', '-1', '-max_muxing_queue_size', '4096');
+    if (remuxVideo) a.push('-output_ts_offset', (t - L).toFixed(4));
+    a.push('-movflags', `frag_keyframe+empty_moov+${remuxVideo ? 'delay_moov+' : ''}default_base_moof`,
+      '-frag_duration', '1000000', '-f', 'mp4', 'pipe:1');
     return a;
   };
 
-  res.writeHead(200, { 'Content-Type': audioOnly ? 'audio/mp4' : 'video/mp4', 'Cache-Control': 'no-store', 'X-Start-Time': String(t) });
+  res.writeHead(200, { 'Content-Type': audioOnly ? 'audio/mp4' : 'video/mp4', 'Cache-Control': 'no-store', 'X-Start-Time': String(L) });
   if (req.method === 'HEAD') return res.end();
 
   let proc = null; let closed = false;
@@ -392,15 +404,42 @@ async function serveProgressive(req, res, abs, q) {
 }
 
 /** Tempo do keyframe imediatamente anterior a t (onde um remux com -c:v copy realmente começa). */
-async function keyframeBefore(abs, t) {
-  if (t <= 0) return 0;
+/**
+ * Primeiro keyframe que o ffmpeg vai emitir ao copiar o vídeo a partir de s (tempos relativos ao
+ * início do arquivo). Usa o mesmo mecanismo de busca do ffmpeg (ffprobe -read_intervals).
+ */
+const landingCache = new Map();
+async function landing(abs, s) {
+  const info = await probe(abs);
+  const fs0 = info.start || 0;
+  const key = `${abs}|${info.duration}|${s.toFixed(3)}`;
+  if (landingCache.has(key)) return landingCache.get(key);
+  let L = s;
   try {
-    const out = await run(FFPROBE, ['-v', 'error', '-read_intervals', `${t.toFixed(3)}%+#1`, '-select_streams', 'v:0',
-      '-show_entries', 'packet=pts_time,flags', '-of', 'csv=p=0', abs], { timeout: 10000 });
-    const line = out.toString().split('\n').find((l) => l.includes('K'));
-    const k = line ? parseFloat(line.split(',')[0]) : NaN;
-    return isFinite(k) && k <= t + 0.05 ? Math.max(0, k) : t;
-  } catch { return t; }
+    const ri = s > 0 ? `${(s + fs0).toFixed(3)}%+#300` : '%+#300';
+    const out = await run(FFPROBE, ['-v', 'error', '-read_intervals', ri, '-select_streams', 'v:0',
+      '-show_entries', 'packet=pts_time,flags', '-of', 'csv=p=0', abs], { timeout: 15000 });
+    for (const line of out.toString().split('\n')) {
+      const [pts, flags] = line.split(',');
+      const v = parseFloat(pts);
+      if (flags && flags.includes('K') && isFinite(v)) { L = v - fs0; break; }
+    }
+  } catch { /* usa s */ }
+  landingCache.set(key, L);
+  if (landingCache.size > 500) landingCache.delete(landingCache.keys().next().value);
+  return L;
+}
+
+/**
+ * Plano de remux para o tempo t: s = onde buscar, l = onde o vídeo realmente começa (linha do tempo zero).
+ * O ffmpeg recua 3/23s ao buscar em vídeos com B-frames; buscar 0,16s depois de um keyframe faz
+ * ffmpeg e ffprobe caírem sempre no mesmo keyframe.
+ */
+async function remuxPlan(abs, t) {
+  if (t <= 0.2) return { s: 0, l: await landing(abs, 0) };
+  const k0 = await landing(abs, t);
+  const s = Math.max(0, (k0 <= t + 0.05 ? k0 : t) + 0.16);
+  return { s, l: await landing(abs, s) };
 }
 
 // ---------------------------------------------------------------- HLS sob demanda (iPhone/Safari)
@@ -671,9 +710,9 @@ const server = http.createServer(async (req, res) => {
         return sendJSON(res, { ...info, sidecar, hwaccel: HWACCEL });
       }
       case '/api/file': return await serveFile(req, res, resolveSafe(q.get('path')), { download: q.get('download') === '1' });
-      case '/api/keyframe': {
+      case '/api/remux-plan': {
         const abs = resolveSafe(q.get('path'));
-        return sendJSON(res, { t: await keyframeBefore(abs, Math.max(0, parseFloat(q.get('t') || '0') || 0)) });
+        return sendJSON(res, await remuxPlan(abs, Math.max(0, parseFloat(q.get('t') || '0') || 0)));
       }
       case '/api/stream': return await serveProgressive(req, res, resolveSafe(q.get('path')), q);
       case '/api/hls/index.m3u8': {

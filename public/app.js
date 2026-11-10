@@ -711,12 +711,14 @@ const P = {
       this.offset = 0;
       if (t > 0) video.addEventListener('loadedmetadata', () => { video.currentTime = t; }, { once: true });
     } else if (mode === 'remux') {
-      if (t > 0 && this.info.video) {
-        try { t = (await api('keyframe', { path: item.path, t: t.toFixed(2) })).t; } catch { /* usa t */ }
+      // o servidor diz onde buscar (s) e onde o vídeo realmente começa (l = deslocamento da linha do tempo)
+      let plan = { s: t, l: t };
+      if (this.info.video) {
+        try { plan = await api('remux-plan', { path: item.path, t: t.toFixed(3) }); } catch { /* usa t */ }
         if (seq !== this.loadSeq) return;
       }
-      this.offset = t;
-      video.src = `/api/stream?${qs({ path: item.path, t: t.toFixed(3), audio: this.audio, mode: 'remux' })}`;
+      this.offset = plan.l;
+      video.src = `/api/stream?${qs({ path: item.path, t: plan.s.toFixed(3), audio: this.audio, mode: 'remux' })}`;
     } else {
       this.offset = 0;
       const src = `/api/hls/index.m3u8?${qs({ path: item.path, h: this.quality, audio: this.audio })}`;
