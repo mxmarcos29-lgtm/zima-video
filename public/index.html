@@ -53,6 +53,8 @@
   <symbol id="i-repeat" viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></symbol>
   <symbol id="i-autoplay" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/></symbol>
   <symbol id="i-info" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></symbol>
+  <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></symbol>
+  <symbol id="i-star-o" viewBox="0 0 24 24"><path d="M22 9.24l-7.19-.62L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21 12 17.27 18.18 21l-1.63-7.03L22 9.24zM12 15.4l-3.76 2.27 1-4.28-3.32-2.88 4.38-.38L12 6.1l1.71 4.04 4.38.38-3.32 2.88 1 4.28L12 15.4z"/></symbol>
   <symbol id="i-speed" viewBox="0 0 24 24"><path d="M20.38 8.57l-1.23 1.85a8 8 0 0 1-.22 7.58H5.07A8 8 0 0 1 15.58 6.85l1.85-1.23A10 10 0 0 0 3.35 19a2 2 0 0 0 1.72 1h13.85a2 2 0 0 0 1.74-1 10 10 0 0 0-.27-10.44zm-9.79 6.84a2 2 0 0 0 2.83 0l5.66-8.49-8.49 5.66a2 2 0 0 0 0 2.83z"/></symbol>
 </svg>
 
@@ -68,6 +70,10 @@
   </header>
   <nav class="crumbs" id="crumbs"></nav>
   <main id="browser">
+    <section id="favorites" class="favorites hidden">
+      <h2>Favoritos</h2>
+      <ul class="list" id="fav-list"></ul>
+    </section>
     <section id="continue" class="continue hidden">
       <h2>Continuar assistindo</h2>
       <div class="hscroll" id="continue-list"></div>
@@ -150,6 +156,7 @@
       <div class="d-actions">
         <button class="pill-btn" id="d-download"><svg><use href="#i-download"/></svg>Baixar</button>
         <button class="pill-btn" id="d-link"><svg><use href="#i-link"/></svg>Copiar link</button>
+        <button class="pill-btn" id="d-fav"><svg><use href="#i-star-o"/></svg>Favoritar</button>
         <button class="pill-btn" id="d-folder"><svg><use href="#i-folder"/></svg>Abrir pasta</button>
       </div>
       <h2 class="d-next-h">Nesta pasta</h2>

@@ -157,6 +157,25 @@ const Sheet = {
 };
 $('#sheet-backdrop').onclick = () => Sheet.close();
 
+// ===================================================================== favoritos (guardados no servidor)
+const Fav = {
+  items: [], set: new Set(),
+  apply(r) { this.items = r.items || []; this.set = new Set(this.items.map((i) => i.path)); },
+  async load() { try { this.apply(await api('favorites')); } catch { /* sem favoritos */ } },
+  has(p) { return this.set.has(p); },
+  async toggle(p, name) {
+    const on = !this.has(p);
+    try {
+      const r = await fetch(`/api/favorites?${qs({ path: p, on: on ? 1 : 0 })}`, { method: 'POST' });
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || 'Erro');
+      this.apply(j);
+      toast(on ? `★ ${name || basename(p) || 'Início'} adicionado aos favoritos` : 'Removido dos favoritos');
+    } catch (e) { toast('Favoritos: ' + e.message); }
+    B.render(); if (Search.open) Search.run(); P.updateFav();
+  },
+};
+
 // ===================================================================== navegador de arquivos
 const B = {
   path: '', entries: [], loadSeq: 0,
@@ -236,9 +255,37 @@ const B = {
       $('#empty').innerHTML = `${icon('folder')}Pasta vazia` + (hidden ? `<br><small>${hidden} arquivo(s) oculto(s) pelo filtro "Somente mídia"</small>` : '');
       $('#empty').classList.remove('hidden');
     }
+    $('#favorites .list-h') && $('#favorites .list-h').remove();
+    this.renderFavorites();
     this.renderContinue();
     if (P.item) markPlaying(P.item.path);
     Preview.refresh();
+  },
+
+  renderFavorites() {
+    const sec = $('#favorites');
+    const items = this.path ? [] : Fav.items;
+    sec.classList.toggle('hidden', !items.length);
+    const ul = $('#fav-list');
+    ul.className = 'list' + (prefs.view === 'grid' ? ' grid' : '');
+    ul.innerHTML = '';
+    if (!items.length) return;
+    const frag = document.createDocumentFragment();
+    for (const e of items) {
+      const li = renderItem(e, { showPath: true });
+      if (e.missing) {
+        li.classList.add('missing');
+        $('.item-meta', li).textContent = 'não encontrado (movido ou apagado)';
+        li.onclick = () => Sheet.open((b) => {
+          b.appendChild(el('div', 'sheet-title', esc(e.name)));
+          b.appendChild(el('div', 'sheet-note', 'Este item não existe mais no servidor.'));
+          Sheet.row(b, { ico: 'close', label: 'Remover dos favoritos', onClick: () => { Sheet.close(); Fav.toggle(e.path, e.name); } });
+        });
+      }
+      frag.appendChild(li);
+    }
+    ul.appendChild(frag);
+    if (this.entries.length) { const h = el('div', 'list-h', 'Pastas e arquivos'); sec.appendChild(h); }
   },
 
   renderContinue() {
@@ -286,10 +333,11 @@ function renderItem(e, { showPath = false, highlight = null } = {}) {
   else if (pr && pr.t > 5) meta.push(`parou em ${fmtTime(pr.t)}`);
   let name = esc(e.type === 'video' ? stripExt(e.name) : e.name);
   if (highlight) name = highlightTerms(name, highlight);
+  if (Fav.has(e.path)) name = `<svg class="fav-star"><use href="#i-star"/></svg>` + name;
   li.innerHTML = `${thumb}<div class="item-body"><div class="item-name">${name}</div>` +
     (showPath ? `<div class="item-path">&lrm;${esc(dirname(e.path) || 'Início')}&lrm;</div>` : '') +
     `<div class="item-meta">${esc(meta.join(' · '))}</div></div>` +
-    (e.type !== 'dir' ? `<button class="icon-btn item-more" aria-label="Mais opções">${icon('more')}</button>` : '');
+    `<button class="icon-btn item-more" aria-label="Mais opções">${icon('more')}</button>`;
   const img = $('img', li);
   if (img) {
     if (e.type === 'image') { img.onload = () => img.classList.add('ok'); img.onerror = () => img.remove(); img.src = thumbUrl(e.path, null, 240); }
@@ -341,7 +389,7 @@ function markPlaying(p) {
 function openEntry(e) {
   if (e.type === 'dir') { if (Search.open) Search.close(true); return B.load(e.path); }
   if (e.type === 'video' || e.type === 'audio') {
-    const siblings = Search.open ? null : B.visible().filter((x) => x.type === 'video' || x.type === 'audio')
+    const siblings = Search.open || dirname(e.path) !== B.path ? null : B.visible().filter((x) => x.type === 'video' || x.type === 'audio')
       .map((x) => ({ ...x, path: (B.path ? B.path + '/' : '') + x.name }));
     return P.open(e, { siblings });
   }
@@ -363,8 +411,15 @@ function itemMenu(e) {
         Sheet.row(b, { ico: 'check', label: 'Marcar como assistido', onClick: () => { progress[e.path] = { t: 0, d: 1, at: Date.now(), w: true }; progressDirty = true; flushProgress(); Sheet.close(); B.render(); } });
       }
     }
-    if (dirname(e.path) !== B.path || Search.open) {
+    if (e.type === 'dir') Sheet.row(b, { ico: 'folder', label: 'Abrir pasta', onClick: () => { Sheet.close(); if (Search.open) Search.close(true); B.load(e.path); } });
+    else if (dirname(e.path) !== B.path || Search.open) {
       Sheet.row(b, { ico: 'folder', label: 'Abrir pasta', onClick: () => { Sheet.close(); if (Search.open) Search.close(true); B.load(dirname(e.path)); } });
+    }
+    const fav = Fav.has(e.path);
+    Sheet.row(b, { ico: fav ? 'star' : 'star-o', label: fav ? 'Remover dos favoritos' : 'Adicionar aos favoritos', onClick: () => { Sheet.close(); Fav.toggle(e.path, e.name); } });
+    if (e.type === 'dir') {
+      Sheet.row(b, { ico: 'link', label: 'Copiar link da pasta', onClick: () => { Sheet.close(); copyText(`${location.origin}/#/${encodeURIComponent(e.path).replace(/%2F/g, '/')}`); } });
+      return;
     }
     Sheet.row(b, { ico: 'download', label: 'Baixar', onClick: () => { Sheet.close(); location.href = fileUrl(e.path, { download: 1 }); } });
     Sheet.row(b, { ico: 'link', label: 'Copiar link do arquivo', onClick: () => { Sheet.close(); copyText(location.origin + fileUrl(e.path)); } });
@@ -374,6 +429,10 @@ function itemMenu(e) {
 
 function browserMenu() {
   Sheet.open((b) => {
+    if (B.path) {
+      const fav = Fav.has(B.path);
+      Sheet.row(b, { ico: fav ? 'star' : 'star-o', label: fav ? 'Remover pasta dos favoritos' : 'Favoritar esta pasta', onClick: () => { Sheet.close(); Fav.toggle(B.path); } });
+    }
     const sorts = [['name', 'Nome (A–Z)'], ['name-desc', 'Nome (Z–A)'], ['date', 'Mais recentes'], ['size', 'Maior tamanho']];
     Sheet.header(b, 'Ordenar por');
     for (const [k, label] of sorts) Sheet.row(b, { label, sel: prefs.sort === k, onClick: () => { prefs.sort = k; savePrefs(); Sheet.close(); B.render(); } });
@@ -627,10 +686,11 @@ const P = {
     const seq = ++this.loadSeq;
     this.cancelUpnext();
     if (siblings) this.siblings = siblings;
-    else if (!this.siblings.some((s) => s.path === item.path)) this.siblings = [];
+    else if (!this.siblings.some((s) => s.path === item.path)) { this.siblings = []; this.loadSiblings(item); }
     this.item = item;
     this.info = null; this.cues = null; this.subSel = null; this.triedModes = [];
     $('#subs').innerHTML = '';
+    clearPreview($('#seek-img')); clearPreview($('#scrub-hint img'));
     this.showState('max');
     const title = item.type === 'video' ? stripExt(item.name) : item.name;
     $('#ctrl-title').textContent = title; $('#mini-title').textContent = title; $('#d-title').textContent = title;
@@ -640,6 +700,7 @@ const P = {
     this.destroySource();
     spinner(true);
     this.renderDetails();
+    this.updateFav();
     markPlaying(item.path);
     try {
       const info = await api('info', { path: item.path });
@@ -863,6 +924,23 @@ const P = {
     const i = this.index();
         $('#btn-next').disabled = i < 0 || i >= list.length - 1;
   },
+  // aberto pela pesquisa/favoritos: carrega a pasta real do arquivo para "Nesta pasta" e próximo/anterior
+  async loadSiblings(item) {
+    try {
+      const dir = dirname(item.path);
+      const r = await api('list', { path: dir });
+      if (this.item !== item) return;
+      this.siblings = B.sorted(r.entries.filter((x) => x.type === 'video' || x.type === 'audio'))
+        .map((x) => ({ ...x, path: (dir ? dir + '/' : '') + x.name }));
+      this.renderDetails();
+    } catch { /* sem lista */ }
+  },
+  updateFav() {
+    const b = $('#d-fav'); if (!this.item) return;
+    const on = Fav.has(this.item.path);
+    b.classList.toggle('on', on);
+    b.innerHTML = `${icon(on ? 'star' : 'star-o')}${on ? 'Favorito' : 'Favoritar'}`;
+  },
   renderMeta() {
     const i = this.info; const parts = [];
     if (this.duration()) parts.push(fmtTime(this.duration()));
@@ -1080,6 +1158,7 @@ $('#mini-close').onclick = (e) => { e.stopPropagation(); P.close(); };
 $('#upnext-cancel').onclick = (e) => { e.stopPropagation(); P.cancelUpnext(); showControls(true); };
 $('#upnext-go').onclick = (e) => { e.stopPropagation(); const i = P.index(); P.cancelUpnext(); if (i >= 0) P.open(P.siblings[i + 1]); };
 $('#d-download').onclick = () => P.item && (location.href = fileUrl(P.item.path, { download: 1 }));
+$('#d-fav').onclick = () => P.item && Fav.toggle(P.item.path, P.item.name);
 $('#d-link').onclick = () => P.item && copyText(location.origin + fileUrl(P.item.path));
 $('#d-folder').onclick = () => { if (!P.item) return; const d = dirname(P.item.path); P.minimize(); setTimeout(() => B.load(d), 50); };
 if (!(document.pictureInPictureEnabled || video.webkitSupportsPresentationMode)) $('#btn-pip').classList.add('hidden');
@@ -1227,15 +1306,23 @@ function scrubSecondsPerPx() {
   const w = stage.getBoundingClientRect().width; const d = P.duration() || 600;
   return clamp(d / (w * 3), 0.1, 6);
 }
-let previewTimer = null; let previewT = -1;
 function setPreview(img, t) {
-  // miniatura do frame na posição (arredondada a 5s, com throttle)
-  if (!P.item || !P.info || !P.info.video) { img.removeAttribute('src'); return; }
+  // miniatura do frame na posição (arredondada a 5s, com throttle). A chave inclui o arquivo,
+  // então nunca sobra imagem do vídeo anterior; cada <img> tem seu próprio estado.
+  if (!P.item || !P.info || !P.info.video) { clearPreview(img); return; }
   const r = Math.round(t / 5) * 5;
-  if (r === previewT) return;
-  clearTimeout(previewTimer);
-  previewTimer = setTimeout(() => { previewT = r; img.src = thumbUrl(P.item.path, r, 240); }, 90);
+  const key = `${P.item.path}|${r}`;
+  if (img.dataset.want === key) return;
+  img.dataset.want = key;
+  clearTimeout(img._pvTimer);
+  img._pvTimer = setTimeout(() => {
+    const url = thumbUrl(P.item.path, r, 240);
+    const pre = new Image();
+    pre.onload = () => { if (img.dataset.want === key) img.src = url; };
+    pre.src = url;
+  }, 90);
 }
+function clearPreview(img) { clearTimeout(img._pvTimer); delete img.dataset.want; img.removeAttribute('src'); }
 
 stage.addEventListener('pointerdown', (e) => {
   if (P.state !== 'max' || !P.item) return;
@@ -1361,14 +1448,14 @@ seekEl.addEventListener('pointerdown', (e) => {
   if (!P.duration()) return;
   e.stopPropagation(); seekDrag = true; scrubbing = true;
   try { seekEl.setPointerCapture(e.pointerId); } catch { /* ignore */ }
-  stage.classList.add('scrubbing'); showControls(true);
+  stage.classList.add('scrubbing', 'bar-drag'); showControls(true);
   seekAt(e.clientX);
 });
 seekEl.addEventListener('pointermove', (e) => { if (seekDrag) seekAt(e.clientX); });
 const seekEnd = (e, apply) => {
   if (!seekDrag) return;
   seekDrag = false; scrubbing = false;
-  stage.classList.remove('scrubbing');
+  stage.classList.remove('scrubbing', 'bar-drag');
   if (apply) P.seek(seekAt(e.clientX));
   scheduleHide();
 };
@@ -1437,5 +1524,9 @@ document.addEventListener('keydown', (e) => {
 });
 
 // ===================================================================== início
-B.load(pathFromHash(), false).then(() => history.replaceState({ dir: B.path }, '', location.href));
+const favLoaded = Fav.load();
+B.load(pathFromHash(), false).then(async () => {
+  history.replaceState({ dir: B.path }, '', location.href);
+  await favLoaded; B.render();
+});
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.getRegistrations().then(() => {});

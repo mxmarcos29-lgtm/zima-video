@@ -113,6 +113,12 @@ main { padding-bottom: calc(96px + var(--safe-b)); }
 .empty svg { width: 56px; height: 56px; opacity: .5; display: block; margin: 0 auto 12px; }
 .loading { display: flex; justify-content: center; padding: 48px; }
 
+.favorites { padding: 4px 0 4px; }
+.favorites h2, .list-h { font-size: 16px; padding: 4px 16px 6px; }
+.list-h { padding-top: 12px; color: var(--muted); font-size: 14px; font-weight: 600; }
+.fav-star { width: 15px; height: 15px; color: #ffc940; vertical-align: -2px; margin-right: 4px; }
+.item.missing { opacity: .45; }
+#d-fav.on { color: #ffc940; }
 .continue { padding: 4px 0 8px; }
 .continue h2 { font-size: 16px; padding: 4px 16px 8px; }
 .hscroll { display: flex; gap: 10px; overflow-x: auto; padding: 0 12px 6px; scroll-snap-type: x mandatory; scrollbar-width: none; }
@@ -243,13 +249,15 @@ video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: con
 }
 .stage.show-ctrl .seek-knob { transform: scale(1); }
 .stage.scrubbing .seek-knob { transform: scale(1.35); }
-.player.max:not(.fs) .stage:not(.show-ctrl) .seek { bottom: -10.5px; }
+/* com os controles escondidos a barra some junto (aparece de novo ao tocar ou ao arrastar) */
+.seek { transition: opacity .2s; }
+.stage:not(.show-ctrl):not(.scrubbing) .seek { opacity: 0; }
 
 .seek-tooltip {
   position: absolute; bottom: 30px; transform: translateX(-50%); display: none; flex-direction: column; align-items: center; gap: 4px;
   pointer-events: none;
 }
-.stage.scrubbing .seek-tooltip { display: flex; }
+.stage.bar-drag .seek-tooltip { display: flex; }
 .seek-tooltip img, .scrub-hint img {
   width: 160px; aspect-ratio: 16/9; object-fit: cover; border-radius: 8px; border: 2px solid #fff; background: #222;
 }

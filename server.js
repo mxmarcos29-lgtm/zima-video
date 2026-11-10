@@ -659,6 +659,52 @@ async function subtitle(q) {
   }));
 }
 
+// ---------------------------------------------------------------- favoritos
+// Guardados no servidor (mesma lista no celular e no computador).
+const DATA_DIR = path.resolve(process.env.DATA_DIR || CACHE);
+const FAV_FILE = path.join(DATA_DIR, 'favorites.json');
+let favorites = null;
+async function loadFavorites() {
+  if (favorites) return favorites;
+  try { favorites = JSON.parse(await fsp.readFile(FAV_FILE, 'utf8')); if (!Array.isArray(favorites)) favorites = []; }
+  catch { favorites = []; }
+  return favorites;
+}
+let favWrite = Promise.resolve();
+function saveFavorites() {
+  const data = JSON.stringify(favorites, null, 1);
+  favWrite = favWrite.then(async () => {
+    await fsp.mkdir(DATA_DIR, { recursive: true });
+    const tmp = FAV_FILE + '.tmp';
+    await fsp.writeFile(tmp, data);
+    await fsp.rename(tmp, FAV_FILE);
+  }).catch((e) => console.warn('[favoritos]', e.message));
+  return favWrite;
+}
+async function listFavorites() {
+  const favs = await loadFavorites();
+  const items = await Promise.all(favs.map(async (f) => {
+    const st = await statSafe(path.join(ROOT, f.path));
+    const dir = st ? st.isDirectory() : f.type === 'dir';
+    return { path: f.path, name: path.posix.basename(f.path) || 'Início', type: dir ? 'dir' : typeOf(f.path),
+      size: st && !dir ? st.size : 0, mtime: st ? st.mtimeMs : 0, added: f.added, missing: !st };
+  }));
+  return { items };
+}
+async function setFavorite(rel, on) {
+  const abs = resolveSafe(rel);
+  const p = relOf(abs);
+  const favs = await loadFavorites();
+  const i = favs.findIndex((f) => f.path === p);
+  if (on && i < 0) {
+    const st = await statSafe(abs);
+    if (!st) throw new HttpError(404, 'Arquivo não encontrado');
+    favs.unshift({ path: p, type: st.isDirectory() ? 'dir' : typeOf(p), added: Date.now() });
+  } else if (!on && i >= 0) favs.splice(i, 1);
+  await saveFavorites();
+  return listFavorites();
+}
+
 // ---------------------------------------------------------------- static
 async function serveStatic(req, res, pathname) {
   let rel = decodeURIComponent(pathname);
@@ -738,6 +784,10 @@ const server = http.createServer(async (req, res) => {
         const vtt = await subtitle(q);
         res.writeHead(200, { 'Content-Type': 'text/vtt; charset=utf-8', 'Cache-Control': 'private, max-age=3600' });
         return res.end(vtt);
+      }
+      case '/api/favorites': {
+        if (req.method === 'POST') return sendJSON(res, await setFavorite(q.get('path') || '', q.get('on') !== '0'));
+        return sendJSON(res, await listFavorites());
       }
       case '/api/config': return sendJSON(res, { thumbnails: THUMBNAILS, previews: PREVIEWS, hwaccel: HWACCEL, segment: SEG });
       default: throw new HttpError(404, 'Rota não encontrada');
