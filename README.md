@@ -15,6 +15,7 @@ Navegue pelas pastas do servidor até o vídeo e assista direto no navegador, co
 - Arrastar para cima: tela cheia · arrastar para baixo em tela cheia: sai
 - Pinça em tela cheia: zoom para preencher a tela
 - Toque duplo no centro: tela cheia
+- Vídeo vertical abre a tela cheia em pé; o botão ⟳ (ou a tecla `R`) alterna entre vertical e horizontal
 - Botão "voltar" do Android minimiza o player / fecha menus
 - Velocidade (0,25x a 3x), legendas (.srt/.vtt/.ass externas e embutidas), faixas de áudio, qualidade (1080p/720p/480p/360p), repetir, reprodução automática do próximo arquivo da pasta, picture-in-picture
 - Continua de onde você parou; seção "Continuar assistindo" no início
@@ -28,7 +29,9 @@ Navegue pelas pastas do servidor até o vídeo e assista direto no navegador, co
 - Pesquisa por nome em todas as pastas ou só na pasta atual (ignora acentos)
 - Favoritos: pastas e arquivos favoritos aparecem no topo do início (salvos no servidor, iguais em todos os aparelhos). Favorite pelo menu ⋮ do item, pelo menu do topo (pasta atual) ou pelo botão no player
 - Pressionar e segurar um item: favoritar, baixar, copiar link, reproduzir do início, marcar como assistido
-- Visualizador de imagens
+- Visualizador de fotos: deslizar para a próxima/anterior, pinça ou toque duplo para zoom (roda do mouse no PC), arrastar para baixo para fechar, apresentação automática; no PC `←`/`→`, `+`/`-`, `0`, espaço
+- Prévia em vídeo: além da escolha automática, deslize o dedo na horizontal sobre uma miniatura para percorrer a prévia
+- No computador: barra lateral com favoritos e pastas, pesquisa no topo (`/`), player em duas colunas, mini player flutuante e prévia do quadro ao passar o mouse na barra de progresso
 
 **Formatos**
 O app escolhe automaticamente a forma mais leve de reproduzir:

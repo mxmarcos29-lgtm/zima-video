@@ -554,12 +554,14 @@ async function thumbnail(abs, t, width) {
     await fsp.mkdir(path.dirname(out), { recursive: true });
     let at = 0; let info = null;
     try { info = await probe(abs); } catch { /* ignore */ }
-    if (t === 'auto') {
+    if (t === 'auto' && typeOf(abs) === 'image') at = 0;
+    else if (t === 'auto') {
       const d = info ? info.duration : 0;
       at = d > 0 ? Math.min(d * 0.15, Math.max(0, d - 1)) : 5;
     } else at = Math.max(0, parseFloat(t) || 0);
     const tmp = out + '.' + process.pid + '.tmp.jpg';
-    const attempt = (ss) => run(FFMPEG, ['-hide_banner', '-loglevel', 'error', '-nostdin', '-ss', ss.toFixed(2), '-i', abs,
+    // sem -ss quando é 0: o leitor de JPEG do ffmpeg não gera nada com -ss (nem -ss 0)
+    const attempt = (ss) => run(FFMPEG, ['-hide_banner', '-loglevel', 'error', '-nostdin', ...(ss > 0 ? ['-ss', ss.toFixed(2)] : []), '-i', abs,
       '-map', '0:v:0', '-frames:v', '1', '-vf', `scale=${width}:-2:flags=bilinear`, '-q:v', t === 'auto' ? '4' : '7', '-y', tmp], { timeout: 30000 });
     try {
       await attempt(at);

@@ -55,15 +55,21 @@
   <symbol id="i-info" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></symbol>
   <symbol id="i-star" viewBox="0 0 24 24"><path d="M12 17.27L18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></symbol>
   <symbol id="i-star-o" viewBox="0 0 24 24"><path d="M22 9.24l-7.19-.62L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21 12 17.27 18.18 21l-1.63-7.03L22 9.24zM12 15.4l-3.76 2.27 1-4.28-3.32-2.88 4.38-.38L12 6.1l1.71 4.04 4.38.38-3.32 2.88 1 4.28L12 15.4z"/></symbol>
+  <symbol id="i-rotate" viewBox="0 0 24 24"><path d="M16.48 2.52c3.27 1.55 5.61 4.72 5.97 8.48h1.5C23.44 4.84 18.29 0 12 0l-.66.03 3.81 3.81 1.33-1.32zm-6.25-.77c-.59-.59-1.54-.59-2.12 0L1.75 8.11c-.59.59-.59 1.54 0 2.12l12.02 12.02c.59.59 1.54.59 2.12 0l6.36-6.36c.59-.59.59-1.54 0-2.12L10.23 1.75zm4.6 19.44L2.81 9.17l6.36-6.36 12.02 12.02-6.36 6.36zm-7.31.29C4.25 19.94 1.91 16.76 1.55 13H.05C.56 19.16 5.71 24 12 24l.66-.03-3.81-3.81-1.33 1.32z"/></symbol>
   <symbol id="i-speed" viewBox="0 0 24 24"><path d="M20.38 8.57l-1.23 1.85a8 8 0 0 1-.22 7.58H5.07A8 8 0 0 1 15.58 6.85l1.85-1.23A10 10 0 0 0 3.35 19a2 2 0 0 0 1.72 1h13.85a2 2 0 0 0 1.74-1 10 10 0 0 0-.27-10.44zm-9.79 6.84a2 2 0 0 0 2.83 0l5.66-8.49-8.49 5.66a2 2 0 0 0 0 2.83z"/></symbol>
 </svg>
 
 <div id="app">
   <!-- ============ NAVEGADOR DE ARQUIVOS ============ -->
+  <aside id="sidebar" class="sidebar" aria-label="Navegação">
+    <button class="side-brand" id="side-brand"><img src="icon.svg" alt=""><span>Zima Video</span></button>
+    <nav id="side-body"></nav>
+  </aside>
   <header class="topbar">
     <button class="icon-btn" id="btn-up" aria-label="Voltar"><svg><use href="#i-back"/></svg></button>
     <div class="brand" id="brand"><img class="logo" src="icon.svg" alt=""><span id="title">Zima Video</span></div>
     <div class="spacer"></div>
+    <button class="search-pill" id="search-pill"><svg><use href="#i-search"/></svg><span>Pesquisar arquivos e pastas</span><kbd>/</kbd></button>
     <button class="icon-btn" id="btn-search" aria-label="Pesquisar"><svg><use href="#i-search"/></svg></button>
     <button class="icon-btn" id="btn-view" aria-label="Alterar visualização"><svg><use href="#i-grid"/></svg></button>
     <button class="icon-btn" id="btn-menu" aria-label="Opções"><svg><use href="#i-more"/></svg></button>
@@ -129,6 +135,7 @@
           <div class="time"><span id="t-cur">0:00</span> / <span id="t-dur">0:00</span><span class="mode-badge" id="mode-badge"></span></div>
           <input type="range" class="vol" id="vol" min="0" max="1" step="0.05" value="1" aria-label="Volume">
           <button class="icon-btn" id="btn-pip" aria-label="Picture-in-picture"><svg><use href="#i-pip"/></svg></button>
+          <button class="icon-btn hidden" id="btn-rotate" aria-label="Girar tela" title="Girar (vertical/horizontal)"><svg><use href="#i-rotate"/></svg></button>
           <button class="icon-btn" id="btn-fs" aria-label="Tela cheia"><svg><use href="#i-fs"/></svg></button>
         </div>
       </div>
@@ -165,7 +172,18 @@
   </section>
 
   <!-- ============ VISUALIZADOR DE IMAGEM ============ -->
-  <div id="viewer" class="viewer hidden"><img id="viewer-img" alt=""><button class="icon-btn" id="viewer-close" aria-label="Fechar"><svg><use href="#i-close"/></svg></button></div>
+  <div id="gallery" class="gallery hidden" role="dialog" aria-label="Fotos">
+    <div class="g-track" id="g-track"></div>
+    <div class="g-top">
+      <button class="icon-btn" id="g-close" aria-label="Fechar"><svg><use href="#i-back"/></svg></button>
+      <div class="g-text"><div id="g-title"></div><div id="g-count"></div></div>
+      <button class="icon-btn" id="g-play" aria-label="Apresentação" title="Apresentação (espaço)"><svg><use href="#i-play"/></svg></button>
+      <button class="icon-btn" id="g-download" aria-label="Baixar" title="Baixar"><svg><use href="#i-download"/></svg></button>
+      <button class="icon-btn" id="g-more" aria-label="Mais opções"><svg><use href="#i-more"/></svg></button>
+    </div>
+    <button class="icon-btn g-nav" id="g-prev" aria-label="Anterior"><svg><use href="#i-back"/></svg></button>
+    <button class="icon-btn g-nav" id="g-next" aria-label="Próxima"><svg><use href="#i-right"/></svg></button>
+  </div>
 
   <!-- ============ BOTTOM SHEET ============ -->
   <div id="sheet-backdrop" class="sheet-backdrop hidden"></div>
@@ -174,5 +192,6 @@
   <div id="toast" class="toast"></div>
 </div>
 <script src="app.js"></script>
+<script src="gallery.js"></script>
 </body>
 </html>

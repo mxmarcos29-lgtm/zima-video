@@ -160,7 +160,7 @@ $('#sheet-backdrop').onclick = () => Sheet.close();
 // ===================================================================== favoritos (guardados no servidor)
 const Fav = {
   items: [], set: new Set(),
-  apply(r) { this.items = r.items || []; this.set = new Set(this.items.map((i) => i.path)); },
+  apply(r) { this.items = r.items || []; this.set = new Set(this.items.map((i) => i.path)); Side.render(); },
   async load() { try { this.apply(await api('favorites')); } catch { /* sem favoritos */ } },
   has(p) { return this.set.has(p); },
   async toggle(p, name) {
@@ -175,6 +175,40 @@ const Fav = {
     B.render(); if (Search.open) Search.run(); P.updateFav();
   },
 };
+
+// ===================================================================== barra lateral (desktop)
+const Side = {
+  roots: [],
+  async init() {
+    try { const r = await api('list', { path: '' }); this.roots = B.sorted(r.entries.filter((e) => e.type === 'dir')); } catch { /* ignore */ }
+    this.render();
+  },
+  link(box, ico, label, active, onClick, star = false) {
+    const b = el('button', 'side-link' + (active ? ' active' : ''));
+    b.innerHTML = (star ? '<svg class="fav-star"><use href="#i-star"/></svg>' : icon(ico)) + `<span>${esc(label)}</span>`;
+    b.title = label; b.onclick = onClick; box.appendChild(b);
+  },
+  render() {
+    const box = $('#side-body'); if (!box) return;
+    box.innerHTML = '';
+    const cur = B.path;
+    this.link(box, 'home', 'Início', !cur, () => { if (Search.open) Search.close(true); B.load(''); });
+    if (Fav.items.length) {
+      box.appendChild(el('div', 'side-h', 'Favoritos'));
+      for (const f of Fav.items) {
+        this.link(box, typeIcon(f.type), f.name, f.type === 'dir' && f.path === cur, () => { if (Search.open) Search.close(true); openEntry(f); }, true);
+      }
+    }
+    if (this.roots.length) {
+      box.appendChild(el('div', 'side-h', 'Pastas'));
+      for (const r of this.roots) {
+        this.link(box, 'folder', r.name, cur === r.name || cur.startsWith(r.name + '/'), () => { if (Search.open) Search.close(true); B.load(r.name); });
+      }
+    }
+  },
+};
+$('#side-brand').onclick = () => B.load('');
+$('#search-pill').onclick = () => Search.show();
 
 // ===================================================================== navegador de arquivos
 const B = {
@@ -225,6 +259,7 @@ const B = {
     });
     requestAnimationFrame(() => { crumbs.scrollLeft = crumbs.scrollWidth; });
     document.title = p ? `${basename(p)} — Zima Video` : 'Zima Video';
+    Side.render();
   },
 
   sorted(entries) {
@@ -393,7 +428,11 @@ function openEntry(e) {
       .map((x) => ({ ...x, path: (B.path ? B.path + '/' : '') + x.name }));
     return P.open(e, { siblings });
   }
-  if (e.type === 'image') return Viewer.show(e.path);
+  if (e.type === 'image') {
+    const imgs = Search.open || dirname(e.path) !== B.path ? null : B.visible().filter((x) => x.type === 'image')
+      .map((x) => ({ ...x, path: (B.path ? B.path + '/' : '') + x.name }));
+    return Gallery.show(e, imgs);
+  }
   itemMenu(e);
 }
 
@@ -503,15 +542,6 @@ $('#search-clear').onclick = () => { $('#search-input').value = ''; Search.run()
 document.querySelectorAll('.chip[data-scope]').forEach((c) => { c.onclick = () => { Search.setScope(c.dataset.scope); Search.run(); }; });
 $('#chip-media').onclick = (e) => { prefs.mediaOnly = !prefs.mediaOnly; savePrefs(); e.currentTarget.classList.toggle('active', prefs.mediaOnly); Search.run(); B.render(); };
 
-// ===================================================================== visualizador de imagem
-const Viewer = {
-  show(p) {
-    $('#viewer-img').src = fileUrl(p);
-    $('#viewer').classList.remove('hidden');
-    pushLayer('viewer', () => { $('#viewer').classList.add('hidden'); $('#viewer-img').removeAttribute('src'); });
-  },
-};
-$('#viewer').onclick = () => closeLayer('viewer');
 
 // ===================================================================== legendas (renderização própria)
 function parseVTT(text) {
@@ -548,14 +578,31 @@ const Preview = {
       v.className = 'pv'; v.muted = true; v.defaultMuted = true; v.loop = true; v.playsInline = true;
       v.setAttribute('playsinline', ''); v.setAttribute('muted', ''); v.preload = 'auto'; v.disablePictureInPicture = true;
       v.addEventListener('playing', () => v.classList.add('on'));
+      v.addEventListener('seeked', () => v.classList.add('on'));
+      v.addEventListener('loadedmetadata', () => { if (this.scrubFrac != null) v.currentTime = this.scrubFrac * v.duration * 0.999; });
       v.addEventListener('timeupdate', () => { const bar = v.parentNode && v.parentNode.querySelector('.pv-bar'); if (bar && v.duration) bar.style.width = (v.currentTime / v.duration) * 100 + '%'; });
       v.addEventListener('error', () => { if (this.cur) this.failed.add(this.cur.dataset.pv); this.stop(); });
       this.el = v;
     }
     return this.el;
   },
-  start(thumb) {
-    if (!thumb || this.cur === thumb || !this.enabled || this.failed.has(thumb.dataset.pv)) return;
+  // arrastar o dedo na horizontal sobre a miniatura: percorre a prévia na posição do dedo
+  scrub(thumb, frac) {
+    if (this.cur !== thumb) { this.start(thumb, true); if (this.cur !== thumb) return; }
+    const v = this.el;
+    this.scrubFrac = frac;
+    v.pause();
+    if (v.duration) v.currentTime = frac * v.duration * 0.999;
+    const bar = thumb.querySelector('.pv-bar'); if (bar) { bar.style.transition = 'none'; bar.style.width = frac * 100 + '%'; }
+  },
+  endScrub() {
+    if (!this.cur) return;
+    const bar = this.cur.querySelector('.pv-bar'); if (bar) bar.style.transition = '';
+    this.scrubFrac = null;
+    this.el.play().catch(() => {});
+  },
+  start(thumb, force = false) {
+    if (!thumb || this.cur === thumb || (!this.enabled && !force) || this.failed.has(thumb.dataset.pv)) return;
     this.stop();
     this.cur = thumb;
     const v = this.video();
@@ -582,13 +629,17 @@ const Preview = {
     const scope = Search.open ? $('#search') : document;
     const top = Search.open ? $('.search-bar').getBoundingClientRect().bottom : $('#crumbs').getBoundingClientRect().bottom;
     const bottom = innerHeight - (P.state === 'mini' ? 80 : 0);
-    const target = top + (bottom - top) * 0.42;
+    // o ponto-alvo acompanha a rolagem: no topo da página escolhe o primeiro vídeo visível, no fim o último
+    const sc = Search.open ? $('#search') : document.scrollingElement;
+    const max = sc.scrollHeight - sc.clientHeight;
+    const f = max > 40 ? clamp(sc.scrollTop / max, 0, 1) : 0;
+    const target = top + (bottom - top) * f;
     let best = null; let bestD = Infinity;
     for (const t of scope.querySelectorAll('.thumb[data-pv]')) {
       if (this.failed.has(t.dataset.pv)) continue;
       const r = t.getBoundingClientRect();
       if (!r.width || r.top < top - 1 || r.bottom > bottom + 1 || r.left < -1 || r.right > innerWidth + 1) continue;
-      const d = Math.abs((r.top + r.bottom) / 2 - target);
+      const d = f === 0 ? r.top - top : f === 1 ? bottom - r.bottom : Math.abs((r.top + r.bottom) / 2 - target);
       if (d < bestD) { bestD = d; best = t; }
     }
     if (best) this.start(best); else this.stop();
@@ -602,6 +653,35 @@ const onScrollPv = () => {
   Preview.schedule();
 };
 addEventListener('scroll', onScrollPv, { passive: true });
+(() => {
+  let s = null;
+  document.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse') return;
+    const t = e.target.closest && e.target.closest('.item .thumb[data-pv]');
+    if (!t || !prefs.previews) return;
+    s = { t, x: e.clientX, y: e.clientY, id: e.pointerId, on: false };
+  }, true);
+  document.addEventListener('pointermove', (e) => {
+    if (!s || e.pointerId !== s.id) return;
+    const dx = e.clientX - s.x; const dy = e.clientY - s.y;
+    if (!s.on) {
+      if (Math.abs(dy) > 12 && Math.abs(dy) > Math.abs(dx)) { s = null; return; } // é rolagem
+      if (Math.abs(dx) < 10) return;
+      s.on = true; Preview.suppressClick = true;
+      try { s.t.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+    }
+    const r = s.t.getBoundingClientRect();
+    Preview.scrub(s.t, clamp((e.clientX - r.left) / r.width, 0, 1));
+  }, true);
+  const end = (e) => {
+    if (!s || e.pointerId !== s.id) return;
+    if (s.on) { Preview.endScrub(); setTimeout(() => { Preview.suppressClick = false; }, 50); }
+    s = null;
+  };
+  document.addEventListener('pointerup', end, true);
+  document.addEventListener('pointercancel', end, true);
+  document.addEventListener('click', (e) => { if (Preview.suppressClick) { e.stopPropagation(); e.preventDefault(); Preview.suppressClick = false; } }, true);
+})();
 $('#search').addEventListener('scroll', onScrollPv, { passive: true });
 $('#continue-list').addEventListener('scroll', onScrollPv, { passive: true });
 addEventListener('resize', () => Preview.schedule());
@@ -671,6 +751,46 @@ function loadHls() {
   });
   return hlsLib;
 }
+
+// ---------- animação contínua entre player cheio e mini player (FLIP)
+// O vídeo encolhe/cresce acompanhando o dedo até a posição exata do mini player.
+const Morph = {
+  // posição que o vídeo ocupa em um estado, medida aplicando a classe por um instante (sem pintar)
+  rectFor(state) {
+    const cls = player.className; const st = player.getAttribute('style');
+    player.classList.remove('max', 'mini', 'hidden'); player.classList.add(state, 'flip');
+    player.style.transform = '';
+    const r = stage.getBoundingClientRect();
+    player.className = cls; if (st == null) player.removeAttribute('style'); else player.setAttribute('style', st);
+    return r;
+  },
+  // p = 0 → posição "from" (player cheio); p = 1 → posição "to" (mini)
+  set(p, from, to) {
+    const sx = 1 + (to.width / from.width - 1) * p; const sy = 1 + (to.height / from.height - 1) * p;
+    stage.style.transformOrigin = '0 0';
+    stage.style.transform = `translate(${(to.left - from.left) * p}px, ${(to.top - from.top) * p}px) scale(${sx}, ${sy})`;
+    stage.style.borderRadius = `${10 * p}px`;
+    player.style.backgroundColor = `rgba(15,15,16,${(1 - p).toFixed(3)})`;
+    const d = $('#details');
+    d.style.opacity = String(Math.max(0, 1 - p * 3.5));
+    d.style.transform = p ? `translateY(${(p * 120).toFixed(1)}px)` : '';
+  },
+  clear() {
+    stage.style.transform = ''; stage.style.transformOrigin = ''; stage.style.borderRadius = '';
+    player.style.backgroundColor = ''; $('#details').style.opacity = ''; $('#details').style.transform = '';
+  },
+  tween(p0, p1, from, to, ms, done) {
+    cancelAnimationFrame(this.raf);
+    const t0 = performance.now();
+    const ease = (x) => 1 - Math.pow(1 - x, 3);
+    const step = (now) => {
+      const k = Math.min(1, (now - t0) / ms);
+      this.set(p0 + (p1 - p0) * ease(k), from, to);
+      if (k < 1) this.raf = requestAnimationFrame(step); else done && done();
+    };
+    this.raf = requestAnimationFrame(step);
+  },
+};
 
 const P = {
   item: null, info: null, mode: null, offset: 0, audio: 0, quality: 0, hls: null,
@@ -849,7 +969,8 @@ const P = {
   showState(s) {
     const prev = this.state;
     this.state = s;
-    player.classList.remove('hidden', 'max', 'mini', 'dragging', 'leaving');
+    player.classList.remove('hidden', 'max', 'mini', 'dragging', 'leaving', 'flip');
+    if (this.morphing) player.classList.add('flip');
     player.style.transform = ''; player.style.opacity = '';
     if (s === 'hidden') { player.classList.add('hidden'); document.body.classList.remove('lock'); Preview.schedule(500); return; }
     player.classList.add(s);
@@ -858,13 +979,28 @@ const P = {
     if (s === 'max' && prev !== 'max') pushLayer('player', () => this.minimize(true));
     if (s === 'max') { player.scrollTop = 0; showControls(); }
   },
-  minimize(fromHistory = false) {
+  minimize(fromHistory = false, p0 = 0, from = null, to = null) {
     if (this.state !== 'max') return;
     if (this.fs) this.exitFullscreen();
-    if (!fromHistory) { closeLayer('player'); return; }
-    this.showState('mini');
+    if (!fromHistory) { this.pendingMorph = { p0, from, to }; closeLayer('player'); return; }
+    const m = this.pendingMorph || {}; this.pendingMorph = null;
+    hideControls();
+    player.scrollTop = 0;
+    from = m.from || stage.getBoundingClientRect(); to = m.to || Morph.rectFor('mini');
+    this.morphing = true;
+    Morph.tween(m.p0 || 0, 1, from, to, 230, () => {
+      Morph.clear(); this.showState('mini'); this.morphing = false;
+    });
   },
-  maximize() { if (this.state === 'mini') this.showState('max'); },
+  maximize() {
+    if (this.state !== 'mini') return;
+    const from = stage.getBoundingClientRect(); // posição atual do mini (inclusive se arrastado)
+    this.morphing = true;
+    this.showState('max');
+    const to = stage.getBoundingClientRect();
+    Morph.set(1, to, from);
+    Morph.tween(1, 0, to, from, 260, () => { Morph.clear(); this.morphing = false; player.classList.remove('flip'); });
+  },
   close() {
     this.saveProgress(); flushProgress();
     this.loadSeq++;
@@ -889,8 +1025,10 @@ const P = {
       if (fsEl.requestFullscreen) { await fsEl.requestFullscreen({ navigationUI: 'hide' }); this.nativeFs = true; }
       else if (fsEl.webkitRequestFullscreen) { fsEl.webkitRequestFullscreen(); this.nativeFs = true; }
     } catch { /* pseudo-fullscreen (iPhone) */ }
+    // vídeo vertical → tela cheia em pé; horizontal → deitada. O botão "girar" alterna.
     const v = this.info && this.info.video;
-    if (v && v.width > v.height && screen.orientation && screen.orientation.lock) screen.orientation.lock('landscape').catch(() => {});
+    this.orient = v && v.height > v.width ? 'portrait' : 'landscape';
+    this.lockOrientation();
     $('#btn-fs').innerHTML = icon('fs-exit');
     showControls();
   },
@@ -902,6 +1040,18 @@ const P = {
     else if (document.webkitFullscreenElement) document.webkitExitFullscreen();
     if (screen.orientation && screen.orientation.unlock) try { screen.orientation.unlock(); } catch { /* ignore */ }
     $('#btn-fs').innerHTML = icon('fs');
+    $('#btn-rotate').classList.add('hidden');
+  },
+  canLock() { return !!(this.nativeFs && screen.orientation && screen.orientation.lock); },
+  lockOrientation() {
+    $('#btn-rotate').classList.toggle('hidden', !this.canLock());
+    if (this.canLock()) screen.orientation.lock(this.orient).catch(() => $('#btn-rotate').classList.add('hidden'));
+  },
+  rotate() {
+    if (!this.fs) return;
+    this.orient = this.orient === 'portrait' ? 'landscape' : 'portrait';
+    this.lockOrientation();
+    flash(this.orient === 'portrait' ? 'Vertical' : 'Horizontal');
   },
   toggleFullscreen() { this.fs ? this.exitFullscreen() : this.enterFullscreen(); },
 
@@ -1147,6 +1297,7 @@ onBtn('#btn-next', () => P.next());
 onBtn('#btn-prev', () => P.prev());
 onBtn('#btn-min', () => P.minimize());
 onBtn('#btn-fs', () => P.toggleFullscreen());
+onBtn('#btn-rotate', () => P.rotate());
 onBtn('#btn-settings', () => settingsMenu());
 onBtn('#btn-cc', () => P.toggleCC());
 onBtn('#btn-mute', () => { video.muted = !video.muted; if (!video.muted && video.volume === 0) video.volume = 1; });
@@ -1363,7 +1514,10 @@ stage.addEventListener('pointermove', (e) => {
     if (g.axis === 'h') {
       scrubbing = true; g.scrubT = P.time(); stage.classList.add('scrubbing'); hideControls();
       $('#scrub-hint').classList.remove('hidden');
-    } else if (!P.fs && dy > 0) player.classList.add('dragging');
+    } else if (!P.fs && dy > 0) {
+      player.classList.add('dragging'); hideControls();
+      g.from = stage.getBoundingClientRect(); g.to = Morph.rectFor('mini');
+    }
   }
   if (g.axis === 'h') {
     const t = clamp(g.scrubT + dx * scrubSecondsPerPx(), 0, P.duration());
@@ -1373,9 +1527,9 @@ stage.addEventListener('pointermove', (e) => {
     const diff = t - g.scrubT;
     $('#scrub-hint span').textContent = `${fmtTime(t)}  (${diff >= 0 ? '+' : '−'}${fmtTime(Math.abs(diff))})`;
     setPreview($('#scrub-hint img'), t);
-  } else if (g.axis === 'v' && !P.fs && dy > 0) {
-    player.style.transform = `translateY(${dy}px)`;
-    player.style.opacity = String(clamp(1 - dy / 900, 0.5, 1));
+  } else if (g.axis === 'v' && !P.fs && g.from) {
+    g.p = clamp(dy / Math.max(120, g.to.top - g.from.top), 0, 1);
+    Morph.set(g.p, g.from, g.to);
   }
 });
 
@@ -1397,18 +1551,11 @@ function endGesture(e, cancelled) {
   if (axis === 'v') {
     const vy = dy / dt; // px/ms
     if (P.fs) { if (dy > 60 || vy > 0.5) P.exitFullscreen(); return; }
-    if (dy < -50 || vy < -0.5) { P.enterFullscreen(); return; }
-    if (dy > 0) {
-      if (!cancelled && (dy > 110 || vy > 0.6)) {
-        player.classList.remove('dragging'); player.classList.add('leaving');
-        player.style.transform = `translateY(${innerHeight}px)`; player.style.opacity = '0.3';
-        setTimeout(() => P.minimize(), 180);
-      } else {
-        player.classList.remove('dragging'); player.classList.add('leaving');
-        player.style.transform = ''; player.style.opacity = '';
-        setTimeout(() => player.classList.remove('leaving'), 220);
-      }
-    }
+    const from = g.from; const to = g.to; const p = g.p || 0; g.from = g.to = null; g.p = 0;
+    player.classList.remove('dragging');
+    if (!from) { if (dy < -50 || vy < -0.5) P.enterFullscreen(); return; }
+    if (!cancelled && (p > 0.3 || vy > 0.5)) P.minimize(false, p, from, to);
+    else Morph.tween(p, 0, from, to, 180, () => Morph.clear());
     return;
   }
   if (!cancelled && !axis) handleTap(e.clientX);
@@ -1431,6 +1578,22 @@ stage.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse' &&
 // ---------- barra de progresso (arrastar com prévia do frame)
 const seekEl = $('#seek');
 let seekDrag = false;
+function seekTip(clientX) {
+  const r = $('.seek-track').getBoundingClientRect();
+  const f = clamp((clientX - r.left) / r.width, 0, 1);
+  const t = f * P.duration();
+  const tip = $('#seek-tip');
+  const half = (P.fs ? 84 : 64);
+  tip.style.left = clamp(clientX - r.left, half, r.width - half) + 'px';
+  $('#seek-time').textContent = fmtTime(t);
+  setPreview($('#seek-img'), t);
+  return f;
+}
+seekEl.addEventListener('pointermove', (e) => {
+  if (e.pointerType !== 'mouse' || seekDrag || !P.duration()) return;
+  stage.classList.add('bar-hover'); seekTip(e.clientX);
+});
+seekEl.addEventListener('pointerleave', () => stage.classList.remove('bar-hover'));
 function seekAt(clientX) {
   const r = $('.seek-track').getBoundingClientRect();
   const f = clamp((clientX - r.left) / r.width, 0, 1);
@@ -1487,7 +1650,7 @@ seekEl.addEventListener('pointercancel', (e) => seekEnd(e, false));
       player.classList.add('leaving'); player.style.transform = `translateX(${Math.sign(dx) * innerWidth}px)`; player.style.opacity = '0';
       setTimeout(() => P.close(), 180); return;
     }
-    if (axis === 'v' && dy < -40) { P.maximize(); return; }
+    if (axis === 'v' && dy < -40) { P.maximize(); player.style.transform = ''; return; }
     player.classList.add('leaving'); player.style.transform = ''; player.style.opacity = '';
     setTimeout(() => player.classList.remove('leaving'), 220);
   };
@@ -1499,7 +1662,7 @@ seekEl.addEventListener('pointercancel', (e) => seekEnd(e, false));
 document.addEventListener('keydown', (e) => {
   if (e.target.matches('input[type=search], input[type=text], textarea')) return;
   if (e.ctrlKey || e.metaKey || e.altKey) return;
-  if (e.key === '/' && !P.item) { e.preventDefault(); Search.show(); return; }
+  if (e.key === '/' && P.state !== 'max' && !Gallery.open) { e.preventDefault(); Search.show(); return; }
   if (!P.item) return;
   const k = e.key;
   const handled = {
@@ -1508,7 +1671,7 @@ document.addEventListener('keydown', (e) => {
     ArrowLeft: () => { P.seekBy(-5); flash('−5s'); }, ArrowRight: () => { P.seekBy(5); flash('+5s'); },
     ArrowUp: () => { video.muted = false; video.volume = clamp(video.volume + 0.05, 0, 1); flash(`Volume ${Math.round(video.volume * 100)}%`); },
     ArrowDown: () => { video.volume = clamp(video.volume - 0.05, 0, 1); flash(`Volume ${Math.round(video.volume * 100)}%`); },
-    f: () => P.toggleFullscreen(), F: () => P.toggleFullscreen(),
+    f: () => P.toggleFullscreen(), F: () => P.toggleFullscreen(), r: () => P.rotate(),
     m: () => { video.muted = !video.muted; flash(video.muted ? 'Sem som' : 'Som ativado'); }, M: () => { video.muted = !video.muted; },
     c: () => P.toggleCC(), C: () => P.toggleCC(),
     i: () => (P.state === 'max' ? P.minimize() : P.maximize()), I: () => (P.state === 'max' ? P.minimize() : P.maximize()),
@@ -1523,8 +1686,16 @@ document.addEventListener('keydown', (e) => {
   if (/^[0-9]$/.test(k)) { P.seek((P.duration() * +k) / 10); showControls(); }
 });
 
+// ===================================================================== dicas dos botões (desktop)
+{
+  const hints = { 'btn-play': 'Reproduzir/pausar (k)', 'btn-fs': 'Tela cheia (f)', 'btn-mute': 'Sem som (m)', 'btn-cc': 'Legendas (c)',
+    'btn-min': 'Minimizar (i)', 'btn-next': 'Próximo (Shift+N)', 'btn-prev': 'Anterior (Shift+P)', 'btn-settings': 'Configurações', 'btn-rotate': 'Girar (r)' };
+  document.querySelectorAll('button[aria-label]').forEach((b) => { if (!b.title) b.title = hints[b.id] || b.getAttribute('aria-label'); });
+}
+
 // ===================================================================== início
 const favLoaded = Fav.load();
+Side.init();
 B.load(pathFromHash(), false).then(async () => {
   history.replaceState({ dir: B.path }, '', location.href);
   await favLoaded; B.render();
