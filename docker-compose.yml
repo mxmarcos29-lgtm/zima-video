@@ -1,0 +1,78 @@
+name: zima-video
+services:
+  zima-video:
+    image: ghcr.io/mxmarcos29-lgtm/zima-video:latest
+    # Para compilar localmente no servidor em vez de baixar a imagem, descomente:
+    # build: .
+    container_name: zima-video
+    restart: unless-stopped
+    ports:
+      - "8096:8080"
+    environment:
+      TZ: America/Sao_Paulo
+      # none = conversão por software | vaapi = GPU Intel/AMD (descomente "devices" abaixo)
+      HWACCEL: none
+      # Usuário/senha opcionais (recomendado se acessar pela internet)
+      AUTH_USER: ""
+      AUTH_PASS: ""
+    volumes:
+      # Pastas que aparecem no app (somente leitura)
+      - /DATA:/media/DATA:ro
+      - /media:/media/Discos:ro
+      # Cache de miniaturas, legendas e conversões
+      - /DATA/AppData/zima-video/cache:/cache
+    # devices:
+    #   - /dev/dri:/dev/dri
+    x-casaos:
+      envs:
+        - container: HWACCEL
+          description:
+            en_us: "Hardware transcoding: none or vaapi"
+            pt_br: "Conversão por hardware: none ou vaapi"
+        - container: AUTH_USER
+          description:
+            en_us: "Optional login user"
+            pt_br: "Usuário de login (opcional)"
+        - container: AUTH_PASS
+          description:
+            en_us: "Optional login password"
+            pt_br: "Senha de login (opcional)"
+      ports:
+        - container: "8080"
+          description:
+            en_us: Web UI
+            pt_br: Interface web
+      volumes:
+        - container: /media/DATA
+          description:
+            en_us: ZimaOS data folder
+            pt_br: Pasta de dados do ZimaOS
+        - container: /media/Discos
+          description:
+            en_us: External drives
+            pt_br: Discos externos
+        - container: /cache
+          description:
+            en_us: Thumbnail and transcoding cache
+            pt_br: Cache de miniaturas e conversões
+
+x-casaos:
+  architectures:
+    - amd64
+    - arm64
+  main: zima-video
+  author: mxmarcos29-lgtm
+  developer: mxmarcos29-lgtm
+  category: Media
+  icon: https://raw.githubusercontent.com/mxmarcos29-lgtm/zima-video/main/public/icon.svg
+  tagline:
+    en_us: File browser and video player
+    pt_br: Explorador de arquivos e player de vídeo
+  description:
+    en_us: Browse your folders and play almost any video format with mobile-first, YouTube-style gestures.
+    pt_br: Navegue pelas pastas e reproduza praticamente qualquer formato de vídeo, com gestos estilo YouTube pensados para o celular.
+  title:
+    en_us: Zima Video
+  index: /
+  port_map: "8096"
+  scheme: http

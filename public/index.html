@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f0f10">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Zima Video</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></symbol>
+  <symbol id="i-prev" viewBox="0 0 24 24"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></symbol>
+  <symbol id="i-next" viewBox="0 0 24 24"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></symbol>
+  <symbol id="i-fs" viewBox="0 0 24 24"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></symbol>
+  <symbol id="i-fs-exit" viewBox="0 0 24 24"><path d="M5 16h3v3h2v-5H5v2zm3-8H5v2h5V5H8v3zm6 11h2v-3h3v-2h-5v5zm2-11V5h-2v5h5V8h-3z"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58a.49.49 0 0 0 .12-.61l-1.92-3.32a.488.488 0 0 0-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54a.484.484 0 0 0-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58a.49.49 0 0 0-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="M16.59 8.59L12 13.17 7.41 8.59 6 10l6 6 6-6z"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></symbol>
+  <symbol id="i-back" viewBox="0 0 24 24"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></symbol>
+  <symbol id="i-folder" viewBox="0 0 24 24"><path d="M10 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/></symbol>
+  <symbol id="i-video" viewBox="0 0 24 24"><path d="M18 4l2 4h-3l-2-4h-2l2 4h-3l-2-4H8l2 4H7L5 4H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V4h-4z"/></symbol>
+  <symbol id="i-audio" viewBox="0 0 24 24"><path d="M12 3v10.55c-.59-.34-1.27-.55-2-.55-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4V7h4V3h-6z"/></symbol>
+  <symbol id="i-image" viewBox="0 0 24 24"><path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></symbol>
+  <symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></symbol>
+  <symbol id="i-subtitle" viewBox="0 0 24 24"><path d="M20 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zM4 12h4v2H4v-2zm10 6H4v-2h10v2zm6 0h-4v-2h4v2zm0-4H10v-2h10v2z"/></symbol>
+  <symbol id="i-grid" viewBox="0 0 24 24"><path d="M3 3v8h8V3H3zm6 6H5V5h4v4zm-6 4v8h8v-8H3zm6 6H5v-4h4v4zm4-16v8h8V3h-8zm6 6h-4V5h4v4zm-6 4v8h8v-8h-8zm6 6h-4v-4h4v4z"/></symbol>
+  <symbol id="i-list" viewBox="0 0 24 24"><path d="M3 14h4v-4H3v4zm0 5h4v-4H3v4zM3 9h4V5H3v4zm5 5h13v-4H8v4zm0 5h13v-4H8v4zM8 5v4h13V5H8z"/></symbol>
+  <symbol id="i-sort" viewBox="0 0 24 24"><path d="M3 18h6v-2H3v2zM3 6v2h18V6H3zm0 7h12v-2H3v2z"/></symbol>
+  <symbol id="i-more" viewBox="0 0 24 24"><path d="M12 8c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41z"/></symbol>
+  <symbol id="i-replay" viewBox="0 0 24 24"><path d="M12 5V1L7 6l5 5V7c3.31 0 6 2.69 6 6s-2.69 6-6 6-6-2.69-6-6H4c0 4.42 3.58 8 8 8s8-3.58 8-8-3.58-8-8-8z"/></symbol>
+  <symbol id="i-vol" viewBox="0 0 24 24"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></symbol>
+  <symbol id="i-mute" viewBox="0 0 24 24"><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51A8.796 8.796 0 0 0 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06a8.99 8.99 0 0 0 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></symbol>
+  <symbol id="i-pip" viewBox="0 0 24 24"><path d="M19 7h-8v6h8V7zm2-4H3c-1.1 0-2 .9-2 2v14c0 1.1.9 1.98 2 1.98h18c1.1 0 2-.88 2-1.98V5c0-1.1-.9-2-2-2zm0 16.01H3V4.98h18v14.03z"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7c-2.76 0-5 2.24-5 5s2.24 5 5 5h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4c2.76 0 5-2.24 5-5s-2.24-5-5-5z"/></symbol>
+  <symbol id="i-right" viewBox="0 0 24 24"><path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M17.65 6.35A7.958 7.958 0 0 0 12 4c-4.42 0-7.99 3.58-7.99 8s3.57 8 7.99 8c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6c1.66 0 3.14.69 4.22 1.78L13 11h7V4l-2.35 2.35z"/></symbol>
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/></symbol>
+  <symbol id="i-ff" viewBox="0 0 24 24"><path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z"/></symbol>
+  <symbol id="i-rw" viewBox="0 0 24 24"><path d="M11 18V6l-8.5 6 8.5 6zm.5-6l8.5 6V6l-8.5 6z"/></symbol>
+  <symbol id="i-hq" viewBox="0 0 24 24"><path d="M19 4H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm-8 11H9.5v-2h-2v2H6V9h1.5v2.5h2V9H11v6zm7-1c0 .55-.45 1-1 1h-.75v1.5h-1.5V15H14c-.55 0-1-.45-1-1v-4c0-.55.45-1 1-1h3c.55 0 1 .45 1 1v4zm-3.5-.5h2v-3h-2v3z"/></symbol>
+  <symbol id="i-repeat" viewBox="0 0 24 24"><path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z"/></symbol>
+  <symbol id="i-autoplay" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-6h2v6zm0-8h-2V7h2v2z"/></symbol>
+  <symbol id="i-speed" viewBox="0 0 24 24"><path d="M20.38 8.57l-1.23 1.85a8 8 0 0 1-.22 7.58H5.07A8 8 0 0 1 15.58 6.85l1.85-1.23A10 10 0 0 0 3.35 19a2 2 0 0 0 1.72 1h13.85a2 2 0 0 0 1.74-1 10 10 0 0 0-.27-10.44zm-9.79 6.84a2 2 0 0 0 2.83 0l5.66-8.49-8.49 5.66a2 2 0 0 0 0 2.83z"/></symbol>
+</svg>
+
+<div id="app">
+  <!-- ============ NAVEGADOR DE ARQUIVOS ============ -->
+  <header class="topbar">
+    <button class="icon-btn" id="btn-up" aria-label="Voltar"><svg><use href="#i-back"/></svg></button>
+    <div class="brand" id="brand"><svg class="logo"><use href="#i-play"/></svg><span id="title">Zima Video</span></div>
+    <div class="spacer"></div>
+    <button class="icon-btn" id="btn-search" aria-label="Pesquisar"><svg><use href="#i-search"/></svg></button>
+    <button class="icon-btn" id="btn-view" aria-label="Alterar visualização"><svg><use href="#i-grid"/></svg></button>
+    <button class="icon-btn" id="btn-menu" aria-label="Opções"><svg><use href="#i-more"/></svg></button>
+  </header>
+  <nav class="crumbs" id="crumbs"></nav>
+  <main id="browser">
+    <section id="continue" class="continue hidden">
+      <h2>Continuar assistindo</h2>
+      <div class="hscroll" id="continue-list"></div>
+    </section>
+    <ul id="list" class="list"></ul>
+    <div id="empty" class="empty hidden"></div>
+    <div id="loading" class="loading hidden"><div class="spinner"></div></div>
+  </main>
+
+  <!-- ============ PESQUISA ============ -->
+  <div id="search" class="search hidden">
+    <div class="search-bar">
+      <button class="icon-btn" id="search-close" aria-label="Fechar pesquisa"><svg><use href="#i-back"/></svg></button>
+      <input id="search-input" type="search" placeholder="Pesquisar arquivos e pastas" autocomplete="off" enterkeyhint="search">
+      <button class="icon-btn hidden" id="search-clear" aria-label="Limpar"><svg><use href="#i-close"/></svg></button>
+    </div>
+    <div class="chips">
+      <button class="chip active" data-scope="here" id="scope-here">Nesta pasta</button>
+      <button class="chip" data-scope="all">Tudo</button>
+      <button class="chip" id="chip-media">Somente mídia</button>
+    </div>
+    <div class="search-status" id="search-status"></div>
+    <ul class="list" id="search-results"></ul>
+  </div>
+
+  <!-- ============ PLAYER ============ -->
+  <section id="player" class="player hidden" aria-label="Player">
+    <div class="stage" id="stage">
+      <video id="video" playsinline webkit-playsinline preload="auto"></video>
+      <div class="audio-art hidden" id="audio-art"><svg><use href="#i-audio"/></svg></div>
+      <div class="subs" id="subs"></div>
+      <div class="ripple left" id="ripple-l"><div class="ripple-inner"><div class="arrows"><svg><use href="#i-rw"/></svg></div><span>10 segundos</span></div></div>
+      <div class="ripple right" id="ripple-r"><div class="ripple-inner"><div class="arrows"><svg><use href="#i-ff"/></svg></div><span>10 segundos</span></div></div>
+      <div class="pill" id="speed-pill">2x <svg><use href="#i-ff"/></svg></div>
+      <div class="pill center-pill" id="info-pill"></div>
+      <div class="spinner big hidden" id="spinner"></div>
+      <div class="scrub-hint hidden" id="scrub-hint"><img alt=""><span></span></div>
+
+      <div class="controls" id="controls">
+        <div class="ctrl-top">
+          <button class="icon-btn" id="btn-min" aria-label="Minimizar"><svg><use href="#i-down"/></svg></button>
+          <div class="ctrl-title" id="ctrl-title"></div>
+          <button class="icon-btn" id="btn-mute" aria-label="Silenciar"><svg><use href="#i-vol"/></svg></button>
+          <button class="icon-btn" id="btn-cc" aria-label="Legendas"><svg><use href="#i-subtitle"/></svg></button>
+          <button class="icon-btn" id="btn-settings" aria-label="Configurações"><svg><use href="#i-settings"/></svg></button>
+        </div>
+        <div class="ctrl-center">
+          <button class="icon-btn mid" id="btn-prev" aria-label="Anterior"><svg><use href="#i-prev"/></svg></button>
+          <button class="icon-btn big" id="btn-play" aria-label="Reproduzir"><svg><use href="#i-play"/></svg></button>
+          <button class="icon-btn mid" id="btn-next" aria-label="Próximo"><svg><use href="#i-next"/></svg></button>
+        </div>
+        <div class="ctrl-bottom">
+          <div class="time"><span id="t-cur">0:00</span> / <span id="t-dur">0:00</span><span class="mode-badge" id="mode-badge"></span></div>
+          <input type="range" class="vol" id="vol" min="0" max="1" step="0.05" value="1" aria-label="Volume">
+          <button class="icon-btn" id="btn-pip" aria-label="Picture-in-picture"><svg><use href="#i-pip"/></svg></button>
+          <button class="icon-btn" id="btn-fs" aria-label="Tela cheia"><svg><use href="#i-fs"/></svg></button>
+        </div>
+      </div>
+      <div class="seek" id="seek">
+        <div class="seek-tooltip" id="seek-tip"><img id="seek-img" alt=""><span id="seek-time">0:00</span></div>
+        <div class="seek-track"><div class="seek-buf" id="seek-buf"></div><div class="seek-prog" id="seek-prog"></div><div class="seek-knob" id="seek-knob"></div></div>
+      </div>
+      <div class="upnext hidden" id="upnext">
+        <div class="upnext-label">A seguir em <b id="upnext-count">5</b></div>
+        <div class="upnext-title" id="upnext-title"></div>
+        <div class="upnext-btns"><button class="btn" id="upnext-cancel">Cancelar</button><button class="btn primary" id="upnext-go">Reproduzir agora</button></div>
+      </div>
+    </div>
+
+    <div class="mini-bar" id="mini-bar">
+      <div class="mini-text"><div class="mini-title" id="mini-title"></div><div class="mini-sub" id="mini-sub"></div></div>
+      <button class="icon-btn" id="mini-play" aria-label="Reproduzir/pausar"><svg><use href="#i-pause"/></svg></button>
+      <button class="icon-btn" id="mini-close" aria-label="Fechar"><svg><use href="#i-close"/></svg></button>
+      <div class="mini-prog"><div id="mini-prog"></div></div>
+    </div>
+
+    <div class="details" id="details">
+      <h1 id="d-title"></h1>
+      <div class="d-meta" id="d-meta"></div>
+      <div class="d-actions">
+        <button class="pill-btn" id="d-download"><svg><use href="#i-download"/></svg>Baixar</button>
+        <button class="pill-btn" id="d-link"><svg><use href="#i-link"/></svg>Copiar link</button>
+        <button class="pill-btn" id="d-folder"><svg><use href="#i-folder"/></svg>Abrir pasta</button>
+      </div>
+      <h2 class="d-next-h">Nesta pasta</h2>
+      <ul class="list compact" id="d-list"></ul>
+    </div>
+  </section>
+
+  <!-- ============ VISUALIZADOR DE IMAGEM ============ -->
+  <div id="viewer" class="viewer hidden"><img id="viewer-img" alt=""><button class="icon-btn" id="viewer-close" aria-label="Fechar"><svg><use href="#i-close"/></svg></button></div>
+
+  <!-- ============ BOTTOM SHEET ============ -->
+  <div id="sheet-backdrop" class="sheet-backdrop hidden"></div>
+  <div id="sheet" class="sheet hidden" role="dialog"><div class="sheet-handle"></div><div id="sheet-body"></div></div>
+
+  <div id="toast" class="toast"></div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
