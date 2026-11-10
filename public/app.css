@@ -128,6 +128,15 @@ main { padding-bottom: calc(96px + var(--safe-b)); }
 .spinner.big { width: 52px; height: 52px; position: absolute; left: 50%; top: 50%; margin: -26px; pointer-events: none; z-index: 3; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+.thumb video.pv {
+  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: transparent;
+  opacity: 0; transition: opacity .3s; pointer-events: none; z-index: 1;
+}
+.thumb video.pv.on { opacity: 1; }
+.thumb .pv-bar { position: absolute; left: 0; bottom: 0; height: 3px; width: 0; background: rgba(255,255,255,.85); z-index: 2; transition: width .25s linear; }
+.thumb.previewing .ext, .thumb.previewing .prog { opacity: 0; }
+.thumb .badge { z-index: 2; }
+
 /* ------------------------------------------------------------- pesquisa */
 .search { position: fixed; inset: 0; z-index: 40; background: var(--bg); overflow-y: auto; padding-bottom: calc(96px + var(--safe-b)); }
 .search-bar {

@@ -23,6 +23,7 @@ const AUTH_USER = process.env.AUTH_USER || '';
 const AUTH_PASS = process.env.AUTH_PASS || '';
 const SHOW_HIDDEN = process.env.SHOW_HIDDEN === '1';
 const THUMBNAILS = process.env.THUMBNAILS !== '0';
+const PREVIEWS = process.env.PREVIEWS !== '0';
 const INDEX_TTL = parseInt(process.env.SEARCH_INDEX_TTL || '600', 10) * 1000;
 const SEG = 6; // duração dos segmentos HLS (s)
 const PUBLIC = path.join(__dirname, 'public');
@@ -56,6 +57,7 @@ const sha1 = (s) => crypto.createHash('sha1').update(s).digest('hex');
 
 fs.mkdirSync(path.join(CACHE, 'thumbs'), { recursive: true });
 fs.mkdirSync(path.join(CACHE, 'subs'), { recursive: true });
+fs.mkdirSync(path.join(CACHE, 'previews'), { recursive: true });
 fs.rmSync(path.join(CACHE, 'hls'), { recursive: true, force: true });
 fs.mkdirSync(path.join(CACHE, 'hls'), { recursive: true });
 
@@ -94,7 +96,7 @@ function run(cmd, args, { timeout = 120000, maxBuffer = 64 * 1024 * 1024 } = {})
 }
 
 /** Fila simples para limitar processos ffmpeg simultâneos (miniaturas, legendas). */
-function makeQueue(concurrency) {
+function makeQueue(concurrency, maxWaiting = Infinity) {
   let active = 0; const waiting = [];
   const next = () => {
     if (active >= concurrency || !waiting.length) return;
@@ -102,11 +104,17 @@ function makeQueue(concurrency) {
     const { fn, resolve, reject } = waiting.shift();
     fn().then(resolve, reject).finally(() => { active--; next(); });
   };
-  return (fn) => new Promise((resolve, reject) => { waiting.push({ fn, resolve, reject }); next(); });
+  return (fn) => new Promise((resolve, reject) => {
+    waiting.push({ fn, resolve, reject });
+    // fila cheia: descarta os pedidos mais antigos (o usuário já rolou a tela para outro lugar)
+    while (waiting.length > maxWaiting) waiting.shift().reject(new HttpError(503, 'Fila cheia'));
+    next();
+  });
 }
 const thumbQueue = makeQueue(parseInt(process.env.THUMB_CONCURRENCY || '2', 10));
 const previewQueue = makeQueue(2);
 const subQueue = makeQueue(1);
+const clipQueue = makeQueue(parseInt(process.env.PREVIEW_CONCURRENCY || '1', 10), 3);
 
 /** Evita trabalho duplicado para a mesma chave. */
 const inflight = new Map();
@@ -528,6 +536,52 @@ async function thumbnail(abs, t, width) {
   }));
 }
 
+// ---------------------------------------------------------------- prévia em vídeo (estilo YouTube)
+/**
+ * Clipe curto e mudo (≈10s) com trechos de vários pontos do vídeo, em 16:9 pequeno.
+ * Gerado uma vez e guardado no cache.
+ */
+async function previewClip(abs) {
+  const st = await statSafe(abs);
+  if (!st || !st.isFile()) throw new HttpError(404, 'Arquivo não encontrado');
+  const key = sha1(`${abs}|${st.size}|${st.mtimeMs}|pv1`);
+  const out = path.join(CACHE, 'previews', key.slice(0, 2), key + '.mp4');
+  if (await exists(out)) return out;
+  if (await exists(out + '.fail')) throw new HttpError(404, 'Sem prévia');
+  return once('clip:' + key, () => clipQueue(async () => {
+    const info = await probe(abs);
+    if (!info.video) throw new HttpError(404, 'Sem vídeo');
+    const d = info.duration || 0;
+    const LEN = 2;
+    let parts;
+    if (d <= 0) parts = [[0, 8]];
+    else if (d < 14) parts = [[0, Math.min(d, 10)]];
+    else {
+      const n = d < 60 ? 3 : 5;
+      parts = Array.from({ length: n }, (_, i) => [Math.min(d * (0.1 + (0.75 * i) / (n - 1)), d - LEN - 0.5), LEN]);
+    }
+    const args = ['-hide_banner', '-loglevel', 'error', '-nostdin'];
+    for (const [ss, t] of parts) args.push('-ss', ss.toFixed(2), '-t', String(t), '-i', abs);
+    const W = 384; const H = 216;
+    const chains = parts.map((_, i) => `[${i}:v:0]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},fps=24,setsar=1,format=yuv420p[v${i}]`);
+    const filter = chains.join(';') + ';' + parts.map((_, i) => `[v${i}]`).join('') + `concat=n=${parts.length}:v=1:a=0[out]`;
+    await fsp.mkdir(path.dirname(out), { recursive: true });
+    const tmp = out + '.' + process.pid + '.tmp.mp4';
+    args.push('-filter_complex', filter, '-map', '[out]', '-an', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '30',
+      '-profile:v', 'main', '-level', '3.1', '-movflags', '+faststart', '-y', tmp);
+    try {
+      await run(FFMPEG, args, { timeout: 120000 });
+      await fsp.rename(tmp, out);
+      return out;
+    } catch (e) {
+      fsp.rm(tmp, { force: true }).catch(() => {});
+      await fsp.writeFile(out + '.fail', String(e.message)).catch(() => {});
+      console.warn('[prévia]', path.basename(abs), e.message);
+      throw new HttpError(404, 'Sem prévia');
+    }
+  }));
+}
+
 // ---------------------------------------------------------------- legendas
 function srtToVtt(text) {
   text = text.replace(/^﻿/, '').replace(/\r/g, '');
@@ -628,6 +682,11 @@ const server = http.createServer(async (req, res) => {
         return res.end(body);
       }
       case '/api/hls/seg.ts': return await hlsSegment(req, res, q);
+      case '/api/preview': {
+        if (!PREVIEWS) throw new HttpError(404, 'Prévias desativadas');
+        const file = await previewClip(resolveSafe(q.get('path')));
+        return await serveFile(req, res, file, { cache: true });
+      }
       case '/api/thumb': {
         if (!THUMBNAILS && !q.get('t')) throw new HttpError(404, 'Miniaturas desativadas');
         const abs = resolveSafe(q.get('path'));
@@ -641,7 +700,7 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(200, { 'Content-Type': 'text/vtt; charset=utf-8', 'Cache-Control': 'private, max-age=3600' });
         return res.end(vtt);
       }
-      case '/api/config': return sendJSON(res, { thumbnails: THUMBNAILS, hwaccel: HWACCEL, segment: SEG });
+      case '/api/config': return sendJSON(res, { thumbnails: THUMBNAILS, previews: PREVIEWS, hwaccel: HWACCEL, segment: SEG });
       default: throw new HttpError(404, 'Rota não encontrada');
     }
   } catch (e) {

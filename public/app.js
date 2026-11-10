@@ -51,7 +51,7 @@ const store = {
 };
 const prefs = Object.assign({
   view: 'list', sort: 'name', mediaOnly: true, autoplay: true, loop: false,
-  subLang: '', audioLang: '', rate: 1, volume: 1, muted: false, quality: 0,
+  subLang: '', audioLang: '', rate: 1, volume: 1, muted: false, quality: 0, previews: true,
 }, store.get('prefs', {}));
 const savePrefs = () => store.set('prefs', prefs);
 
@@ -238,6 +238,7 @@ const B = {
     }
     this.renderContinue();
     if (P.item) markPlaying(P.item.path);
+    Preview.refresh();
   },
 
   renderContinue() {
@@ -249,7 +250,7 @@ const B = {
     box.innerHTML = '';
     for (const [p, v] of recent) {
       const c = el('div', 'card');
-      c.innerHTML = `<div class="thumb">${icon('video')}<img alt="" loading="lazy"><div class="prog" style="width:${(v.t / v.d) * 100}%"></div>
+      c.innerHTML = `<div class="thumb" data-pv="${esc(p)}">${icon('video')}<img alt="" loading="lazy"><div class="prog" style="width:${(v.t / v.d) * 100}%"></div>
         <span class="badge">${fmtTime(v.d - v.t)} restantes</span></div><div class="item-name">${esc(stripExt(basename(p)))}</div>`;
       loadThumb($('img', c), p);
       c.onclick = () => P.open({ path: p, name: basename(p), type: 'video' });
@@ -272,7 +273,7 @@ function renderItem(e, { showPath = false, highlight = null } = {}) {
   li.dataset.path = e.path;
   const pr = progress[e.path];
   const ext = e.type !== 'dir' ? extname(e.name) : '';
-  let thumb = `<div class="thumb">${icon(typeIcon(e.type))}`;
+  let thumb = `<div class="thumb"${e.type === 'video' ? ` data-pv="${esc(e.path)}"` : ''}>${icon(typeIcon(e.type))}`;
   if (e.type === 'video' || e.type === 'audio' || e.type === 'image') thumb += '<img alt="" loading="lazy" decoding="async">';
   if (e.type === 'video' && ext) thumb += `<span class="ext">${esc(ext)}</span>`;
   if (pr && pr.d) thumb += pr.w ? '<div class="prog" style="width:100%;opacity:.6"></div>' : `<div class="prog" style="width:${(pr.t / pr.d) * 100}%"></div>`;
@@ -378,6 +379,7 @@ function browserMenu() {
     for (const [k, label] of sorts) Sheet.row(b, { label, sel: prefs.sort === k, onClick: () => { prefs.sort = k; savePrefs(); Sheet.close(); B.render(); } });
     Sheet.header(b, 'Exibição');
     Sheet.row(b, { ico: 'video', label: 'Somente mídia e pastas', toggle: true, on: prefs.mediaOnly, onClick: (ev) => { prefs.mediaOnly = !prefs.mediaOnly; savePrefs(); ev.currentTarget.classList.toggle('on', prefs.mediaOnly); B.render(); } });
+    Sheet.row(b, { ico: 'autoplay', label: 'Prévia em vídeo nas miniaturas', toggle: true, on: prefs.previews, onClick: (ev) => { prefs.previews = !prefs.previews; savePrefs(); ev.currentTarget.classList.toggle('on', prefs.previews); if (!prefs.previews) Preview.stop(); else Preview.refresh(); } });
     Sheet.row(b, { ico: prefs.view === 'grid' ? 'list' : 'grid', label: prefs.view === 'grid' ? 'Ver em lista' : 'Ver em grade', onClick: () => { toggleView(); Sheet.close(); } });
     Sheet.row(b, { ico: 'refresh', label: 'Atualizar pasta', onClick: () => { Sheet.close(); B.load(B.path, false); } });
     Sheet.row(b, { ico: 'search', label: 'Reindexar pesquisa', onClick: async () => { Sheet.close(); toast('Reindexando…'); try { const r = await api('reindex'); toast(`${r.count.toLocaleString('pt-BR')} itens indexados`); } catch (e) { toast(e.message); } } });
@@ -406,7 +408,7 @@ const Search = {
     setTimeout(() => $('#search-input').focus(), 50);
     if ($('#search-input').value) this.run();
   },
-  hide() { this.open = false; $('#search').classList.add('hidden'); document.body.classList.remove('lock'); $('#search-input').blur(); },
+  hide() { Preview.stop(); Preview.schedule(500); this.open = false; $('#search').classList.add('hidden'); document.body.classList.remove('lock'); $('#search-input').blur(); },
   close(silent) { if (silent) { dropLayer('search'); this.hide(); history.replaceState({ dir: B.path }, '', location.href); } else closeLayer('search'); },
   setScope(s) {
     this.scope = s;
@@ -427,6 +429,7 @@ const Search = {
       const frag = document.createDocumentFragment();
       for (const e of r.results) frag.appendChild(renderItem(e, { showPath: true, highlight: terms }));
       res.appendChild(frag);
+      Preview.schedule(600);
       $('#search-status').textContent = r.total ? `${r.total.toLocaleString('pt-BR')} resultado(s)` + (r.total > r.results.length ? ` — mostrando ${r.results.length}` : '') : 'Nada encontrado';
     } catch (e) {
       if (seq === this.seq) $('#search-status').textContent = e.message;
@@ -470,6 +473,95 @@ function parseVTT(text) {
   cues.sort((x, y) => x.start - y.start);
   return cues;
 }
+
+// ===================================================================== prévia em vídeo nas miniaturas (estilo YouTube)
+// Celular: a miniatura mais centralizada toca sozinha quando a rolagem para.
+// Desktop: toca ao passar o mouse.
+const Preview = {
+  el: null, cur: null, timer: null, hoverTimer: null, failed: new Set(),
+  get enabled() {
+    const c = navigator.connection;
+    return prefs.previews && !(c && c.saveData) && P.state !== 'max' && !document.hidden;
+  },
+  video() {
+    if (!this.el) {
+      const v = document.createElement('video');
+      v.className = 'pv'; v.muted = true; v.defaultMuted = true; v.loop = true; v.playsInline = true;
+      v.setAttribute('playsinline', ''); v.setAttribute('muted', ''); v.preload = 'auto'; v.disablePictureInPicture = true;
+      v.addEventListener('playing', () => v.classList.add('on'));
+      v.addEventListener('timeupdate', () => { const bar = v.parentNode && v.parentNode.querySelector('.pv-bar'); if (bar && v.duration) bar.style.width = (v.currentTime / v.duration) * 100 + '%'; });
+      v.addEventListener('error', () => { if (this.cur) this.failed.add(this.cur.dataset.pv); this.stop(); });
+      this.el = v;
+    }
+    return this.el;
+  },
+  start(thumb) {
+    if (!thumb || this.cur === thumb || !this.enabled || this.failed.has(thumb.dataset.pv)) return;
+    this.stop();
+    this.cur = thumb;
+    const v = this.video();
+    v.classList.remove('on');
+    thumb.appendChild(v);
+    if (!thumb.querySelector('.pv-bar')) thumb.appendChild(el('div', 'pv-bar'));
+    thumb.classList.add('previewing');
+    v.src = `/api/preview?${qs({ path: thumb.dataset.pv })}`;
+    v.play().catch(() => {});
+  },
+  stop() {
+    if (!this.cur) return;
+    const v = this.el;
+    v.pause(); v.classList.remove('on'); v.removeAttribute('src');
+    try { v.load(); } catch { /* ignore */ }
+    v.remove();
+    this.cur.classList.remove('previewing');
+    const bar = this.cur.querySelector('.pv-bar'); if (bar) bar.remove();
+    this.cur = null;
+  },
+  // escolhe a miniatura mais próxima do centro da tela, totalmente visível
+  pick() {
+    if (!IS_TOUCH || !this.enabled) { if (!this.enabled) this.stop(); return; }
+    const scope = Search.open ? $('#search') : document;
+    const top = Search.open ? $('.search-bar').getBoundingClientRect().bottom : $('#crumbs').getBoundingClientRect().bottom;
+    const bottom = innerHeight - (P.state === 'mini' ? 80 : 0);
+    const target = top + (bottom - top) * 0.42;
+    let best = null; let bestD = Infinity;
+    for (const t of scope.querySelectorAll('.thumb[data-pv]')) {
+      if (this.failed.has(t.dataset.pv)) continue;
+      const r = t.getBoundingClientRect();
+      if (!r.width || r.top < top - 1 || r.bottom > bottom + 1 || r.left < -1 || r.right > innerWidth + 1) continue;
+      const d = Math.abs((r.top + r.bottom) / 2 - target);
+      if (d < bestD) { bestD = d; best = t; }
+    }
+    if (best) this.start(best); else this.stop();
+  },
+  schedule(delay = 450) { clearTimeout(this.timer); this.timer = setTimeout(() => this.pick(), delay); },
+  refresh() { if (this.cur && !document.contains(this.cur)) { this.cur = null; } this.schedule(600); },
+};
+const onScrollPv = () => {
+  // rolando: a prévia atual some se sair da tela; a nova começa quando a rolagem para
+  if (Preview.cur) { const r = Preview.cur.getBoundingClientRect(); if (r.bottom < 0 || r.top > innerHeight) Preview.stop(); }
+  Preview.schedule();
+};
+addEventListener('scroll', onScrollPv, { passive: true });
+$('#search').addEventListener('scroll', onScrollPv, { passive: true });
+$('#continue-list').addEventListener('scroll', onScrollPv, { passive: true });
+addEventListener('resize', () => Preview.schedule());
+document.addEventListener('visibilitychange', () => { if (document.hidden) Preview.stop(); else Preview.schedule(); });
+// desktop: passar o mouse
+document.addEventListener('pointerover', (e) => {
+  if (e.pointerType !== 'mouse') return;
+  const t = e.target.closest && e.target.closest('.thumb[data-pv]');
+  if (!t || t === Preview.cur) return;
+  clearTimeout(Preview.hoverTimer);
+  Preview.hoverTimer = setTimeout(() => Preview.start(t), 350);
+});
+document.addEventListener('pointerout', (e) => {
+  if (e.pointerType !== 'mouse') return;
+  const t = e.target.closest && e.target.closest('.thumb[data-pv]');
+  if (!t || (e.relatedTarget && t.contains(e.relatedTarget))) return;
+  clearTimeout(Preview.hoverTimer);
+  if (Preview.cur === t) Preview.stop();
+});
 
 // ===================================================================== player
 const video = $('#video');
@@ -696,9 +788,10 @@ const P = {
     this.state = s;
     player.classList.remove('hidden', 'max', 'mini', 'dragging', 'leaving');
     player.style.transform = ''; player.style.opacity = '';
-    if (s === 'hidden') { player.classList.add('hidden'); document.body.classList.remove('lock'); return; }
+    if (s === 'hidden') { player.classList.add('hidden'); document.body.classList.remove('lock'); Preview.schedule(500); return; }
     player.classList.add(s);
     document.body.classList.toggle('lock', s === 'max');
+    if (s === 'max') Preview.stop(); else Preview.schedule(500);
     if (s === 'max' && prev !== 'max') pushLayer('player', () => this.minimize(true));
     if (s === 'max') { player.scrollTop = 0; showControls(); }
   },

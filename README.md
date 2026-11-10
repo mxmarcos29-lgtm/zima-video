@@ -24,6 +24,7 @@ Navegue pelas pastas do servidor até o vídeo e assista direto no navegador, co
 **Arquivos**
 - Navegação por pastas com trilha (breadcrumbs), lista ou grade, ordenação por nome/data/tamanho
 - Miniaturas geradas automaticamente a partir do vídeo
+- Prévia em vídeo nas miniaturas (estilo YouTube): no celular a miniatura no centro da tela toca sozinha ao parar de rolar; no computador, ao passar o mouse. Pode ser desligada no menu ⋮ (e é desligada automaticamente com "economia de dados" ativada)
 - Pesquisa por nome em todas as pastas ou só na pasta atual (ignora acentos)
 - Pressionar e segurar um item: baixar, copiar link, reproduzir do início, marcar como assistido
 - Visualizador de imagens
@@ -94,6 +95,8 @@ Se a GPU falhar com algum arquivo, o servidor volta automaticamente para convers
 | `AUTH_USER` / `AUTH_PASS` | vazio | Ativa login (HTTP Basic) |
 | `THUMBNAILS` | `1` | `0` desativa miniaturas automáticas |
 | `THUMB_CONCURRENCY` | `2` | Miniaturas geradas em paralelo |
+| `PREVIEWS` | `1` | `0` desativa as prévias em vídeo |
+| `PREVIEW_CONCURRENCY` | `1` | Prévias geradas em paralelo |
 | `SEARCH_INDEX_TTL` | `600` | Segundos até reindexar a pesquisa |
 | `SHOW_HIDDEN` | `0` | `1` mostra arquivos ocultos (`.x`, `@eaDir`…) |
 
