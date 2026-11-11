@@ -1059,12 +1059,23 @@ const P = {
     if (!this.canLock()) return;
     const want = this.orient;
     this.relocks = 0;
-    const lock = () => { if (this.fs && this.orient === want) screen.orientation.lock(want).catch(() => {}); };
-    screen.orientation.lock(want).catch(() => $('#btn-rotate').classList.add('hidden'));
+    const lock = (why) => { if (this.fs && this.orient === want) this.doLock(want, why); };
+    this.doLock(want, 'entrar');
     // O Chrome no Android pode travar a tela em "deitado" por conta própria logo depois que um vídeo
     // entra em tela cheia, desfazendo a nossa trava. Reafirma a orientação desejada em seguida.
     clearTimeout(this.lockT1); clearTimeout(this.lockT2);
-    this.lockT1 = setTimeout(lock, 400); this.lockT2 = setTimeout(lock, 1200);
+    this.lockT1 = setTimeout(() => lock('+0,4s'), 400); this.lockT2 = setTimeout(() => lock('+1,2s'), 1200);
+  },
+  // registra cada tentativa de travar a orientação (resultado e erro) para o diagnóstico no menu ⚙
+  lockLog: [],
+  doLock(want, why) {
+    const t0 = performance.now();
+    const entry = { why, want, res: '…' };
+    this.lockLog.push(entry); if (this.lockLog.length > 8) this.lockLog.shift();
+    return screen.orientation.lock(want).then(
+      () => { entry.res = `ok → ${screen.orientation.type}`; },
+      (e) => { entry.res = `ERRO ${e && e.name}: ${e && e.message}`.slice(0, 160); },
+    ).finally(() => { entry.ms = Math.round(performance.now() - t0); });
   },
   rotate() {
     if (!this.fs) return;
@@ -1347,10 +1358,13 @@ if (screen.orientation && screen.orientation.addEventListener) {
   screen.orientation.addEventListener('change', () => {
     if (!P.fs || !P.canLock() || !P.orient) return;
     if (!screen.orientation.type.startsWith(P.orient) && (P.relocks = (P.relocks || 0) + 1) <= 3) {
-      screen.orientation.lock(P.orient).catch(() => {});
+      P.doLock(P.orient, `girou p/ ${screen.orientation.type}`);
     }
   });
 }
+document.addEventListener('fullscreenchange', () => {
+  if (document.fullscreenElement && P.fs && P.canLock() && P.orient) P.doLock(P.orient, 'fullscreenchange');
+});
 document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && P.fs && P.nativeFs) P.exitFullscreen(); });
 document.addEventListener('webkitfullscreenchange', () => { if (!document.webkitFullscreenElement && P.fs && P.nativeFs) P.exitFullscreen(); });
 
@@ -1377,6 +1391,12 @@ function settingsMenu() {
       const so = screen.orientation ? screen.orientation.type : '?';
       b.appendChild(el('div', 'sheet-note', `Exibido: ${video.videoWidth}×${video.videoHeight}${info.video.rotation ? ` (rotação ${info.video.rotation}°)` : ''} · ${P.isPortrait() ? 'vertical' : 'horizontal'}` +
         (P.fs ? ` · tela cheia: pedida ${P.orient === 'portrait' ? 'em pé' : 'deitada'}, atual ${so}${P.canLock() ? '' : ' (sem trava)'}` : '')));
+      if (P.lockLog.length) {
+        const chrome = (/Chrome\/(\d+)/.exec(navigator.userAgent) || [])[1];
+        const fsEl = document.fullscreenElement ? document.fullscreenElement.tagName.toLowerCase() : 'nenhum';
+        b.appendChild(el('div', 'sheet-note', esc(`Chrome ${chrome || '?'} · fullscreen: ${fsEl} · ${isSecureContext ? 'https' : 'http'}`) + '<br>' +
+          P.lockLog.map((l) => esc(`${l.why}: ${l.want} → ${l.res}${l.ms != null ? ` (${l.ms}ms)` : ''}`)).join('<br>')));
+      }
     }
     if (P.mode !== 'hls') Sheet.row(b, { ico: 'refresh', label: 'Problemas? Forçar conversão', onClick: () => { Sheet.close(); const t = P.time(); P.mode = 'hls'; P.load(t); } });
   });
