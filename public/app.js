@@ -97,6 +97,8 @@ const UA = navigator.userAgent;
 const IS_APPLE = /iPad|iPhone|iPod/.test(UA) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1) ||
   (/Safari/.test(UA) && !/Chrome|Chromium|Android|Edg/.test(UA));
 const IS_TOUCH = matchMedia('(pointer: coarse)').matches;
+// navegador embutido em apps Android (WebView), como o do app ZimaOS: "; wv)" ou "Version/4.0 Chrome/…"
+const IS_WEBVIEW = /Android/.test(UA) && (/; wv\)/.test(UA) || /Version\/[\d.]+ Chrome\/[\d.]+ Mobile/.test(UA));
 
 // ===================================================================== camadas + histórico (botão voltar do Android)
 // Cada camada (player maximizado, pesquisa, menu) cria uma entrada no histórico. O botão
@@ -982,7 +984,10 @@ const P = {
   },
   minimize(fromHistory = false, p0 = 0, from = null, to = null) {
     if (this.state !== 'max') return;
-    if (this.fs) this.exitFullscreen();
+    if (this.fs) {
+      if (this.fsLayer) { this.fsLayer = false; dropLayer('fs'); } // a entrada extra do histórico é consumida abaixo
+      this.exitFullscreen(true);
+    }
     if (!fromHistory) { this.pendingMorph = { p0, from, to }; closeLayer('player'); return; }
     const m = this.pendingMorph || {}; this.pendingMorph = null;
     hideControls();
@@ -1017,28 +1022,63 @@ const P = {
   },
 
   // ---------- tela cheia
-  async enterFullscreen() {
+  // Tela cheia em dois modos:
+  //  • "do sistema" (Fullscreen API): esconde as barras do navegador e permite travar a orientação;
+  //  • "própria" (CSS): o player ocupa a tela toda sem avisar o sistema.
+  // Dentro de apps (WebView do Android, ex.: app ZimaOS) a tela cheia do sistema faz o app girar a
+  // tela para deitado e a trava de orientação não existe — vídeo vertical usa a tela cheia própria.
+  async enterFullscreen(native = null) {
     this.fs = true;
     player.classList.add('fs');
-    const fsEl = document.documentElement;
-    try {
-      this.nativeFs = false;
-      if (fsEl.requestFullscreen) { await fsEl.requestFullscreen({ navigationUI: 'hide' }); this.nativeFs = true; }
-      else if (fsEl.webkitRequestFullscreen) { fsEl.webkitRequestFullscreen(); this.nativeFs = true; }
-    } catch { /* pseudo-fullscreen (iPhone) */ }
-    // vídeo vertical → tela cheia em pé; horizontal → deitada. O botão "girar" alterna.
     this.orient = this.isPortrait() ? 'portrait' : 'landscape';
-    this.orientAuto = true;
+    this.orientAuto = true; this.lockFailed = false;
+    if (native == null) native = !(IS_WEBVIEW && this.orient === 'portrait');
+    await this.setNative(native);
     this.lockOrientation();
     $('#btn-fs').innerHTML = icon('fs-exit');
     showControls();
+    // plano B: se mesmo assim a tela ficar deitada com vídeo vertical, troca para a tela cheia própria
+    clearTimeout(this.fsCheck);
+    this.fsCheck = setTimeout(() => {
+      if (this.fs && this.nativeFs && IS_TOUCH && this.orient === 'portrait' && screen.orientation &&
+          screen.orientation.type.startsWith('landscape')) {
+        this.lockLog.push({ why: 'plano B', want: 'portrait', res: 'tela continuou deitada → tela cheia própria' });
+        this.setNative(false);
+      }
+    }, 1500);
   },
-  exitFullscreen() {
+  async setNative(on) {
+    const de = document.documentElement;
+    const inNative = !!(document.fullscreenElement || document.webkitFullscreenElement);
+    if (on && !inNative) {
+      this.nativeFs = false;
+      try {
+        if (de.requestFullscreen) { await de.requestFullscreen({ navigationUI: 'hide' }); this.nativeFs = true; }
+        else if (de.webkitRequestFullscreen) { de.webkitRequestFullscreen(); this.nativeFs = true; }
+      } catch { /* sem tela cheia do sistema (iPhone) → própria */ }
+    } else if (!on) {
+      this.nativeFs = false;
+      if (inNative) { try { if (document.exitFullscreen) await document.exitFullscreen(); else document.webkitExitFullscreen(); } catch { /* ignore */ } }
+    }
+    // na tela cheia própria o botão voltar do Android sai da tela cheia (na do sistema, o próprio sistema faz isso)
+    if (this.fs && !this.nativeFs && !this.fsLayer) { this.fsLayer = true; pushLayer('fs', () => { this.fsLayer = false; this.exitFullscreen(true); }); }
+    else if (this.nativeFs && this.fsLayer) { this.fsLayer = false; dropLayer('fs'); }
+    this.updateRotateBtn();
+  },
+  updateRotateBtn() { $('#btn-rotate').classList.toggle('hidden', !(this.fs && (this.canLock() || IS_TOUCH))); },
+  exitFullscreen(fromLayer = false) {
+    if (this.fsLayer && !fromLayer) {
+      const top = layers[layers.length - 1];
+      if (top && top.name === 'fs') { closeLayer('fs'); return; }
+      this.fsLayer = false; dropLayer('fs');
+    }
+    clearTimeout(this.fsCheck);
     this.fs = false;
     player.classList.remove('fs');
     stage.classList.remove('zoom');
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
     else if (document.webkitFullscreenElement) document.webkitExitFullscreen();
+    this.nativeFs = false;
     if (screen.orientation && screen.orientation.unlock) try { screen.orientation.unlock(); } catch { /* ignore */ }
     $('#btn-fs').innerHTML = icon('fs');
     $('#btn-rotate').classList.add('hidden');
@@ -1055,8 +1095,8 @@ const P = {
   },
   canLock() { return !!(this.nativeFs && screen.orientation && screen.orientation.lock); },
   lockOrientation() {
-    $('#btn-rotate').classList.toggle('hidden', !this.canLock());
-    if (!this.canLock()) return;
+    this.updateRotateBtn();
+    if (!this.canLock() || this.lockFailed) return;
     const want = this.orient;
     this.relocks = 0;
     const lock = (why) => { if (this.fs && this.orient === want) this.doLock(want, why); };
@@ -1074,14 +1114,18 @@ const P = {
     this.lockLog.push(entry); if (this.lockLog.length > 8) this.lockLog.shift();
     return screen.orientation.lock(want).then(
       () => { entry.res = `ok → ${screen.orientation.type}`; },
-      (e) => { entry.res = `ERRO ${e && e.name}: ${e && e.message}`.slice(0, 160); },
+      (e) => { entry.res = `ERRO ${e && e.name}: ${e && e.message}`.slice(0, 160); if (e && e.name === 'NotSupportedError') this.lockFailed = true; },
     ).finally(() => { entry.ms = Math.round(performance.now() - t0); });
   },
   rotate() {
     if (!this.fs) return;
     this.orient = this.orient === 'portrait' ? 'landscape' : 'portrait';
     this.orientAuto = false; // escolha manual não é desfeita
-    this.lockOrientation();
+    clearTimeout(this.fsCheck);
+    if ((IS_WEBVIEW || this.lockFailed || !this.canLock()) && IS_TOUCH) {
+      // sem trava de orientação: deitado = tela cheia do sistema (o app/sistema gira), em pé = tela cheia própria
+      this.setNative(this.orient === 'landscape').then(() => this.lockOrientation());
+    } else this.lockOrientation();
     flash(this.orient === 'portrait' ? 'Vertical' : 'Horizontal');
   },
   toggleFullscreen() { this.fs ? this.exitFullscreen() : this.enterFullscreen(); },
@@ -1356,14 +1400,14 @@ async function togglePiP() {
 // se a tela girar para a orientação errada durante a tela cheia, trava de volta (no máximo 3 vezes)
 if (screen.orientation && screen.orientation.addEventListener) {
   screen.orientation.addEventListener('change', () => {
-    if (!P.fs || !P.canLock() || !P.orient) return;
+    if (!P.fs || !P.canLock() || P.lockFailed || !P.orient) return;
     if (!screen.orientation.type.startsWith(P.orient) && (P.relocks = (P.relocks || 0) + 1) <= 3) {
       P.doLock(P.orient, `girou p/ ${screen.orientation.type}`);
     }
   });
 }
 document.addEventListener('fullscreenchange', () => {
-  if (document.fullscreenElement && P.fs && P.canLock() && P.orient) P.doLock(P.orient, 'fullscreenchange');
+  if (document.fullscreenElement && P.fs && P.canLock() && !P.lockFailed && P.orient) P.doLock(P.orient, 'fullscreenchange');
 });
 document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && P.fs && P.nativeFs) P.exitFullscreen(); });
 document.addEventListener('webkitfullscreenchange', () => { if (!document.webkitFullscreenElement && P.fs && P.nativeFs) P.exitFullscreen(); });
@@ -1391,10 +1435,10 @@ function settingsMenu() {
       const so = screen.orientation ? screen.orientation.type : '?';
       b.appendChild(el('div', 'sheet-note', `Exibido: ${video.videoWidth}×${video.videoHeight}${info.video.rotation ? ` (rotação ${info.video.rotation}°)` : ''} · ${P.isPortrait() ? 'vertical' : 'horizontal'}` +
         (P.fs ? ` · tela cheia: pedida ${P.orient === 'portrait' ? 'em pé' : 'deitada'}, atual ${so}${P.canLock() ? '' : ' (sem trava)'}` : '')));
-      if (P.lockLog.length) {
+      if (P.lockLog.length || IS_WEBVIEW) {
         const chrome = (/Chrome\/(\d+)/.exec(navigator.userAgent) || [])[1];
         const fsEl = document.fullscreenElement ? document.fullscreenElement.tagName.toLowerCase() : 'nenhum';
-        b.appendChild(el('div', 'sheet-note', esc(`Chrome ${chrome || '?'} · fullscreen: ${fsEl} · ${isSecureContext ? 'https' : 'http'}`) + '<br>' +
+        b.appendChild(el('div', 'sheet-note', esc(`Chrome ${chrome || '?'}${IS_WEBVIEW ? ' (navegador de app/WebView)' : ''} · tela cheia ${P.fs ? (P.nativeFs ? 'do sistema' : 'própria') : '-'} · fullscreen: ${fsEl} · ${isSecureContext ? 'https' : 'http'}`) + '<br>' +
           P.lockLog.map((l) => esc(`${l.why}: ${l.want} → ${l.res}${l.ms != null ? ` (${l.ms}ms)` : ''}`)).join('<br>')));
       }
     }
