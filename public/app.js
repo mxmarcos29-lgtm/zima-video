@@ -834,7 +834,7 @@ const P = {
       return;
     }
     const info = this.info;
-    player.classList.toggle('portrait-video', !!(info.video && info.video.height > info.video.width));
+    this.setPortrait(!!(info.video && info.video.height > info.video.width));
     $('#audio-art').classList.toggle('hidden', !!info.video);
     if (!info.video) {
       const art = $('#audio-art'); art.innerHTML = icon('audio');
@@ -890,7 +890,8 @@ const P = {
     if (mode === 'direct') {
       video.src = fileUrl(item.path);
       this.offset = 0;
-      if (t > 0) video.addEventListener('loadedmetadata', () => { video.currentTime = t; }, { once: true });
+      if (t > 0) video.addEventListener('loadedmetadata', () => {
+  if (P.info && P.info.video && video.videoWidth) P.setPortrait(video.videoHeight > video.videoWidth); video.currentTime = t; }, { once: true });
     } else if (mode === 'remux') {
       // o servidor diz onde buscar (s) e onde o vídeo realmente começa (l = deslocamento da linha do tempo)
       let plan = { s: t, l: t };
@@ -1026,8 +1027,8 @@ const P = {
       else if (fsEl.webkitRequestFullscreen) { fsEl.webkitRequestFullscreen(); this.nativeFs = true; }
     } catch { /* pseudo-fullscreen (iPhone) */ }
     // vídeo vertical → tela cheia em pé; horizontal → deitada. O botão "girar" alterna.
-    const v = this.info && this.info.video;
-    this.orient = v && v.height > v.width ? 'portrait' : 'landscape';
+    this.orient = this.isPortrait() ? 'portrait' : 'landscape';
+    this.orientAuto = true;
     this.lockOrientation();
     $('#btn-fs').innerHTML = icon('fs-exit');
     showControls();
@@ -1042,6 +1043,16 @@ const P = {
     $('#btn-fs').innerHTML = icon('fs');
     $('#btn-rotate').classList.add('hidden');
   },
+  isPortrait() {
+    // o navegador já aplica a rotação gravada pelo celular; usa as dimensões exibidas quando disponíveis
+    if (video.videoWidth && video.videoHeight) return video.videoHeight > video.videoWidth;
+    const v = this.info && this.info.video;
+    return !!(v && v.height > v.width);
+  },
+  setPortrait(on) {
+    player.classList.toggle('portrait-video', on);
+    if (this.fs && this.orientAuto) { this.orient = on ? 'portrait' : 'landscape'; this.lockOrientation(); }
+  },
   canLock() { return !!(this.nativeFs && screen.orientation && screen.orientation.lock); },
   lockOrientation() {
     $('#btn-rotate').classList.toggle('hidden', !this.canLock());
@@ -1050,6 +1061,7 @@ const P = {
   rotate() {
     if (!this.fs) return;
     this.orient = this.orient === 'portrait' ? 'landscape' : 'portrait';
+    this.orientAuto = false; // escolha manual não é desfeita
     this.lockOrientation();
     flash(this.orient === 'portrait' ? 'Vertical' : 'Horizontal');
   },
@@ -1330,7 +1342,7 @@ function settingsMenu() {
   if (!P.item || !P.info) return;
   const info = P.info;
   const main = () => Sheet.open((b) => {
-    const qLabel = P.quality ? `${P.quality}p` : (info.video ? `Original (${info.video.height}p)` : 'Original');
+    const qLabel = P.quality ? `${P.quality}p` : (info.video ? `Original (${Math.min(info.video.width, info.video.height)}p)` : 'Original');
     const tr = P.subTracks().find((t) => t.key === P.subSel);
     if (info.video) Sheet.row(b, { ico: 'hq', label: 'Qualidade', value: qLabel, chevron: true, onClick: quality });
     Sheet.row(b, { ico: 'speed', label: 'Velocidade', value: video.playbackRate === 1 ? 'Normal' : `${video.playbackRate}x`, chevron: true, onClick: speed });
@@ -1349,7 +1361,7 @@ function settingsMenu() {
   const audioLabel = (a) => a ? ([langName(a.lang), a.title].filter(Boolean).join(' — ') || `Faixa ${a.index + 1}`) + ` (${a.codec}${a.channels ? ' ' + a.channels + 'ch' : ''})` : '';
   const quality = () => Sheet.open((b) => {
     Sheet.header(b, 'Qualidade', main);
-    const h = info.video.height;
+    const h = Math.min(info.video.width, info.video.height);
     Sheet.row(b, { label: `Original (${h}p)`, sel: P.quality === 0, onClick: () => setQ(0) });
     for (const q of [1080, 720, 480, 360]) if (q < h - 20 || (q <= h && P.mode !== 'direct')) Sheet.row(b, { label: `${q}p`, value: 'convertido', sel: P.quality === q, onClick: () => setQ(q) });
     b.appendChild(el('div', 'sheet-note', 'Qualidades menores convertem o vídeo no servidor — útil para assistir pela internet móvel.'));

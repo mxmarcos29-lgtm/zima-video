@@ -200,9 +200,7 @@ video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: con
 
 /* fullscreen (API nativa ou pseudo-fullscreen no iPhone) */
 .player.fs { inset: 0; overflow: hidden; }
-.player.fs .stage, .stage:fullscreen {
-  position: fixed; inset: 0; width: 100%; height: 100%; max-height: none; aspect-ratio: auto; margin: 0; border-radius: 0; z-index: 5;
-}
+
 .player.fs .details, .player.fs .mini-bar { display: none; }
 
 /* controles */
@@ -510,4 +508,12 @@ video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: con
   .player.max #d-list::before { content: 'Nesta pasta'; display: block; font-size: 16px; font-weight: 600; padding: 0 8px 8px; }
   .player.max #d-list:empty::before { content: none; }
   .player.max .list.compact .item.video .thumb { width: 168px; }
+}
+
+/* ============================================================= tela cheia
+   No fim do arquivo e com especificidade maior: precisa vencer as regras de vídeo vertical
+   (.portrait-video) e do layout desktop em duas colunas, senão o vídeo fica cortado. */
+.player.fs .stage, .player.max.fs .stage, .player.max.fs.portrait-video .stage {
+  position: fixed; inset: 0; width: 100%; height: 100%; max-width: none; max-height: none; aspect-ratio: auto;
+  margin: 0; border-radius: 0; z-index: 5; grid-column: auto; grid-row: auto;
 }

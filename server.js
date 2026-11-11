@@ -244,13 +244,21 @@ async function probe(abs) {
       default: !!(s.disposition && s.disposition.default), forced: !!(s.disposition && s.disposition.forced),
       text: TEXT_SUBS.includes(s.codec_name),
     }));
+    let rot = 0;
+    if (v) {
+      const sd = (v.side_data_list || []).find((d) => d.rotation != null);
+      rot = Math.round(parseFloat(sd ? sd.rotation : (v.tags && v.tags.rotate) || 0) || 0);
+    }
     const info = {
       duration: parseFloat((j.format && j.format.duration) || (v && v.duration) || 0) || 0,
       format: (j.format && j.format.format_name) || '',
       bitrate: parseInt((j.format && j.format.bit_rate) || 0, 10),
       title: (j.format && j.format.tags && (j.format.tags.title || j.format.tags.TITLE)) || '',
       start: parseFloat((j.format && j.format.start_time) || 0) || 0,
-      video: v ? { codec: v.codec_name, profile: v.profile || '', level: v.level || 0, width: v.width, height: v.height, pix_fmt: v.pix_fmt || '', fps,
+      // vídeos de celular costumam ser gravados deitados com marcação de rotação (90°/270°):
+      // largura/altura informadas já são as de exibição (como o navegador e o ffmpeg mostram)
+      video: v ? { codec: v.codec_name, profile: v.profile || '', level: v.level || 0, rotation: rot,
+        width: Math.abs(rot) % 180 === 90 ? v.height : v.width, height: Math.abs(rot) % 180 === 90 ? v.width : v.height, pix_fmt: v.pix_fmt || '', fps,
         start: parseFloat(v.start_time || (j.format && j.format.start_time) || 0) || 0 } : null,
       audio, subs,
     };
@@ -311,19 +319,22 @@ async function serveFile(req, res, abs, { download = false, cache = false } = {}
 function targetSize(info, h) {
   const v = info.video;
   if (!v || !v.width || !v.height) return null;
-  const th = Math.min(h || v.height, v.height);
+  // a qualidade (720p, 1080p…) vale para o lado menor, assim um vídeo vertical "720p" fica 720×1280
+  const short = Math.min(v.width, v.height);
+  const k = h ? Math.min(1, h / short) : 1;
   const ev = (x) => Math.max(2, Math.round(x / 2) * 2);
-  return { w: ev((v.width * th) / v.height), h: ev(th) };
+  return { w: ev(v.width * k), h: ev(v.height * k) };
 }
 
 function videoEncodeArgs(info, h, hw, keyint) {
   const size = targetSize(info, h);
-  const bitrate = { 2160: 16000, 1440: 10000, 1080: 6000, 720: 3500, 480: 1600, 360: 900 };
-  const th = size ? size.h : 720;
-  const maxrate = (Object.entries(bitrate).find(([k]) => th >= +k) || [0, 900])[1];
+  // limite de bitrate pelo lado menor (do maior para o menor: chaves numéricas em objeto ficam em ordem crescente)
+  const tiers = [[2160, 16000], [1440, 10000], [1080, 6000], [720, 3500], [480, 1600], [0, 900]];
+  const short = size ? Math.min(size.w, size.h) : 720;
+  const maxrate = tiers.find(([k]) => short >= k)[1];
   const args = [];
   if (hw === 'vaapi') {
-    args.push('-vf', `format=nv12|vaapi,hwupload,scale_vaapi=w=${size ? size.w : -2}:h=${th}`);
+    args.push('-vf', `format=nv12|vaapi,hwupload,scale_vaapi=w=${size ? size.w : -2}:h=${size ? size.h : -2}`);
     args.push('-c:v', 'h264_vaapi', '-qp', '23', '-b:v', `${maxrate}k`, '-maxrate', `${maxrate}k`);
   } else {
     args.push('-vf', size ? `scale=${size.w}:${size.h},format=yuv420p` : 'format=yuv420p');
