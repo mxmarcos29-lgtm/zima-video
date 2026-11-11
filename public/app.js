@@ -1056,7 +1056,15 @@ const P = {
   canLock() { return !!(this.nativeFs && screen.orientation && screen.orientation.lock); },
   lockOrientation() {
     $('#btn-rotate').classList.toggle('hidden', !this.canLock());
-    if (this.canLock()) screen.orientation.lock(this.orient).catch(() => $('#btn-rotate').classList.add('hidden'));
+    if (!this.canLock()) return;
+    const want = this.orient;
+    this.relocks = 0;
+    const lock = () => { if (this.fs && this.orient === want) screen.orientation.lock(want).catch(() => {}); };
+    screen.orientation.lock(want).catch(() => $('#btn-rotate').classList.add('hidden'));
+    // O Chrome no Android pode travar a tela em "deitado" por conta própria logo depois que um vídeo
+    // entra em tela cheia, desfazendo a nossa trava. Reafirma a orientação desejada em seguida.
+    clearTimeout(this.lockT1); clearTimeout(this.lockT2);
+    this.lockT1 = setTimeout(lock, 400); this.lockT2 = setTimeout(lock, 1200);
   },
   rotate() {
     if (!this.fs) return;
@@ -1334,6 +1342,15 @@ async function togglePiP() {
   } catch (e) { toast('Picture-in-picture indisponível'); }
 }
 
+// se a tela girar para a orientação errada durante a tela cheia, trava de volta (no máximo 3 vezes)
+if (screen.orientation && screen.orientation.addEventListener) {
+  screen.orientation.addEventListener('change', () => {
+    if (!P.fs || !P.canLock() || !P.orient) return;
+    if (!screen.orientation.type.startsWith(P.orient) && (P.relocks = (P.relocks || 0) + 1) <= 3) {
+      screen.orientation.lock(P.orient).catch(() => {});
+    }
+  });
+}
 document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && P.fs && P.nativeFs) P.exitFullscreen(); });
 document.addEventListener('webkitfullscreenchange', () => { if (!document.webkitFullscreenElement && P.fs && P.nativeFs) P.exitFullscreen(); });
 
@@ -1356,6 +1373,11 @@ function settingsMenu() {
     if (!$('#btn-pip').classList.contains('hidden')) Sheet.row(b, { ico: 'pip', label: 'Picture-in-picture', onClick: () => { Sheet.close(); togglePiP(); } });
     const modeTxt = { direct: 'Reprodução direta (arquivo original)', remux: 'Remux: vídeo original, áudio convertido', hls: 'Convertendo no servidor (ffmpeg)' }[P.mode];
     b.appendChild(el('div', 'sheet-note', `${esc(modeTxt || '')}<br>${esc(info.format)} · ${info.video ? esc(info.video.codec) + ' ' + info.video.width + '×' + info.video.height : 'áudio'}${info.audio[P.audio] ? ' · ' + esc(info.audio[P.audio].codec) : ''}${info.bitrate ? ' · ' + Math.round(info.bitrate / 1000) + ' kb/s' : ''}`));
+    if (info.video) {
+      const so = screen.orientation ? screen.orientation.type : '?';
+      b.appendChild(el('div', 'sheet-note', `Exibido: ${video.videoWidth}×${video.videoHeight}${info.video.rotation ? ` (rotação ${info.video.rotation}°)` : ''} · ${P.isPortrait() ? 'vertical' : 'horizontal'}` +
+        (P.fs ? ` · tela cheia: pedida ${P.orient === 'portrait' ? 'em pé' : 'deitada'}, atual ${so}${P.canLock() ? '' : ' (sem trava)'}` : '')));
+    }
     if (P.mode !== 'hls') Sheet.row(b, { ico: 'refresh', label: 'Problemas? Forçar conversão', onClick: () => { Sheet.close(); const t = P.time(); P.mode = 'hls'; P.load(t); } });
   });
   const audioLabel = (a) => a ? ([langName(a.lang), a.title].filter(Boolean).join(' — ') || `Faixa ${a.index + 1}`) + ` (${a.codec}${a.channels ? ' ' + a.channels + 'ch' : ''})` : '';
