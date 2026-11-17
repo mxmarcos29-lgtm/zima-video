@@ -861,13 +861,19 @@ const Morph = {
     stage.style.transform = `translate(${(to.left - from.left) * p}px, ${(to.top - from.top) * p}px) scale(${sx}, ${sy})`;
     stage.style.borderRadius = `${10 * p}px`;
     player.style.backgroundColor = `rgba(15,15,16,${(1 - p).toFixed(3)})`;
+    const o = String(Math.max(0, 1 - p * 3.5)); const tr = p ? `translateY(${(p * 120).toFixed(1)}px)` : '';
+    for (const part of this.detailParts()) { part.style.opacity = o; part.style.transform = tr; }
+  },
+  // no layout de duas colunas do computador, #details é "display: contents" (sem caixa própria): opacidade e
+  // transform nele não têm efeito — sem isso a lista lateral ficava visível e sumia de uma vez (piscava)
+  detailParts() {
     const d = $('#details');
-    d.style.opacity = String(Math.max(0, 1 - p * 3.5));
-    d.style.transform = p ? `translateY(${(p * 120).toFixed(1)}px)` : '';
+    return getComputedStyle(d).display === 'contents' ? [...d.children] : [d];
   },
   clear() {
     stage.style.transform = ''; stage.style.transformOrigin = ''; stage.style.borderRadius = '';
-    player.style.backgroundColor = ''; $('#details').style.opacity = ''; $('#details').style.transform = '';
+    player.style.backgroundColor = '';
+    for (const part of [$('#details'), ...$('#details').children]) { part.style.opacity = ''; part.style.transform = ''; }
   },
   tween(p0, p1, from, to, ms, done) {
     cancelAnimationFrame(this.raf);
