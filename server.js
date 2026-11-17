@@ -1385,7 +1385,9 @@ fs.mkdirSync(path.join(PEOPLE_DIR, 'c'), { recursive: true });
 
 const faceVideos = new Map(); // path -> { key, at, frames, faces: [{ id, t, score, n, emb: Float32Array }] }
 const faceById = new Map();   // id -> { path, face }
-let peopleDb = { refs: {}, ignored: {} }; // refs: tag -> [faceId]; ignored: faceId -> 1
+let peopleDb = { refs: {}, ignored: {}, excluded: [] }; // refs: tag -> [faceId]; ignored: faceId -> 1; excluded: pastas fora da análise de rosto
+// pasta (ou algo dentro dela) excluída da análise de rosto?
+const faceExcluded = (rel) => peopleDb.excluded.some((x) => rel === x || rel.startsWith(x + '/'));
 let clusterCache = null;
 const b64ToEmb = (b) => { const buf = Buffer.from(b, 'base64'); return new Float32Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.length)); };
 const embToB64 = (e) => Buffer.from(e.buffer, e.byteOffset, e.byteLength).toString('base64');
@@ -1411,7 +1413,7 @@ function indexFaces(rel, rec) {
       }
     }
   } catch { /* sem dados */ }
-  try { const j = JSON.parse(fs.readFileSync(PEOPLE_FILE, 'utf8')); peopleDb = { refs: j.refs || {}, ignored: j.ignored || {} }; } catch { /* vazio */ }
+  try { const j = JSON.parse(fs.readFileSync(PEOPLE_FILE, 'utf8')); peopleDb = { refs: j.refs || {}, ignored: j.ignored || {}, excluded: j.excluded || [] }; } catch { /* vazio */ }
 })();
 async function saveFaceVideo(rel, rec) {
   const file = videoFile(rel);
@@ -1428,6 +1430,8 @@ async function peopleTagRenamed(from, to) {
 // renomear/mover/excluir arquivos: os rostos acompanham
 async function peopleRelocate(pairs, removed = []) {
   const map = (p) => { for (const [a, b] of pairs) { if (p === a) return b; if (p.startsWith(a + '/')) return b + p.slice(a.length); } return null; };
+  const ex = peopleDb.excluded.map((x) => map(x) ?? x).filter((x) => !removed.some((a) => x === a || x.startsWith(a + '/')));
+  if (ex.join('\n') !== peopleDb.excluded.join('\n')) { peopleDb.excluded = ex; await savePeople(); }
   for (const [rel, rec] of [...faceVideos.entries()]) {
     const n = map(rel);
     const gone = removed.some((a) => rel === a || rel.startsWith(a + '/'));
@@ -1460,6 +1464,7 @@ function faceClusters() {
   const named = new Set(Object.values(peopleDb.refs).flat());
   const pool = [];
   for (const [rel, rec] of faceVideos) {
+    if (faceExcluded(rel)) continue;
     for (const f of rec.faces) {
       if (named.has(f.id) || peopleDb.ignored[f.id]) continue;
       if (refs.length && bestPerson(f.emb, refs).sim >= FACE_MATCH) continue; // já reconhecido
@@ -1491,6 +1496,7 @@ async function faceSuggestions() {
   const db = await loadTags();
   const best = new Map(); // `${path}|${tag}` -> sugestão com maior semelhança
   for (const [rel, rec] of faceVideos) {
+    if (faceExcluded(rel)) continue;
     const has = new Set(db.items[rel] || []);
     for (const f of rec.faces) {
       if (peopleDb.ignored[f.id]) continue;
@@ -1586,12 +1592,13 @@ async function ignoreFaces({ faces }) {
 }
 async function peopleStatus() {
   const idx = await getIndex();
-  const vids = idx.filter((it) => it.t === 'video');
+  const all = idx.filter((it) => it.t === 'video');
+  const vids = all.filter((it) => !faceExcluded(it.p));
   let done = 0; let failed = 0; let faces = 0;
   for (const it of vids) { const r = faceVideos.get(it.p); if (r) { if (r.status === 'failed') failed++; else done++; faces += r.faces.length; } }
   const w = await loadJSON(WORKER_FILE, { tokens: [] });
   return {
-    videos: vids.length, analyzed: done, failed, faces, people: Object.keys(peopleDb.refs).length,
+    videos: vids.length, skipped: all.length - vids.length, excluded: peopleDb.excluded, analyzed: done, failed, faces, people: Object.keys(peopleDb.refs).length,
     workers: (w.tokens || []).map((t) => ({ name: t.name, created: t.created, lastSeen: t.lastSeen || 0, info: t.info || '' })),
   };
 }
@@ -1664,7 +1671,7 @@ async function nextWorkerJob() {
   const now = Date.now();
   for (const it of idx) {
     if (it.t !== 'video') continue;
-    if (faceVideos.has(it.p)) continue;
+    if (faceVideos.has(it.p) || faceExcluded(it.p)) continue;
     if ((workerJobs.get(it.p) || 0) > now) continue;
     if ((workerFails.get(it.p) || 0) >= 3) continue;
     const abs = path.join(ROOT, it.p);
@@ -1863,6 +1870,19 @@ const server = http.createServer(async (req, res) => {
       case '/api/people/worker-token': await requireAdmin(req); return sendJSON(res, await createWorkerToken((await readBody(req)).name));
       case '/api/people/worker-revoke': await requireAdmin(req); return sendJSON(res, await revokeWorker((await readBody(req)).name));
       case '/api/people/worker.zip': await requireAdminGet(req); return await sendWorkerZip(res);
+      case '/api/people/exclude': {
+        // GET: lista; POST { path, on }: tira (on=true) ou devolve (on=false) uma pasta da análise de rosto
+        if (req.method === 'GET') { await requireAdminGet(req); return sendJSON(res, { excluded: peopleDb.excluded }); }
+        await requireAdmin(req); const b = await readBody(req);
+        const r = relOf(resolveSafe(b.path || ''));
+        const st = await statSafe(path.join(ROOT, r));
+        if (b.on && (!r || !st || !st.isDirectory())) throw new HttpError(400, r ? 'Pasta não encontrada' : 'Escolha uma pasta');
+        const set = new Set(peopleDb.excluded);
+        if (b.on) set.add(r); else set.delete(r);
+        peopleDb.excluded = [...set].sort(ptSort);
+        await savePeople();
+        return sendJSON(res, { ok: true, excluded: peopleDb.excluded });
+      }
       case '/api/people/reanalyze': {
         await requireAdmin(req); const b = await readBody(req);
         for (const p of b.paths || []) { const r = relOf(resolveSafe(p)); fs.rm(videoFile(r), { force: true }, () => {}); indexFaces(r, null); workerFails.delete(r); }

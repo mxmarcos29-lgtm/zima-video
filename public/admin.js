@@ -210,6 +210,7 @@ const Admin = {
     try {
       const r = await api('admin/status');
       this.enabled = r.enabled; this.logged = r.logged; this.fromEnv = r.fromEnv; this.readonly = r.readonly || [];
+      if (this.logged && typeof People !== 'undefined') People.loadExcluded();
     } catch { /* ignore */ }
   },
 
@@ -720,6 +721,7 @@ const Admin = {
     Sheet.row(b, { ico: 'edit', label: 'Renomear', onClick: () => this.rename(e) });
     Sheet.row(b, { ico: 'move', label: 'Mover para…', onClick: () => this.move([e]) });
     Sheet.row(b, { ico: 'delete', label: 'Excluir', onClick: () => this.remove([e]) });
+    if (e.type === 'dir') People.folderRow(b, e);
   },
 };
 const typeOfName = (n) => {

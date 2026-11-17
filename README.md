@@ -87,6 +87,7 @@ Menu ⋮ → **Pessoas** (modo administrador). Só reconhece as pessoas que **vo
 
 - **Pelo nome do arquivo:** procura o nome de cada pessoa (e apelidos) no nome dos vídeos, ignorando maiúsculas, acentos, pontos, traços e “_”. Também lista nomes que se repetem em vários arquivos para virar pessoa com um toque. Você confere e aplica as tags.
 - **Pelo rosto:** um **ajudante** roda no seu PC e usa a placa de vídeo (DirectML: AMD, NVIDIA ou Intel) para encontrar e comparar os rostos; o NAS só guarda os resultados. Os rostos parecidos aparecem em grupos: dê o nome uma vez e a pessoa passa a ser sugerida nos outros vídeos.
+- **Excluir pastas da análise de rosto:** ⋮ numa pasta → “Não analisar rostos nesta pasta”, ou Pessoas → **Pastas excluídas**. Vale para as subpastas; os rostos já encontrados nelas somem dos grupos e das sugestões (e voltam se a pasta for incluída de novo).
 - Qualquer tag pode ser marcada como **pessoa** (⋮ ao lado da tag → “É uma pessoa”, com outras formas do nome).
 
 ### Instalar o ajudante no Windows

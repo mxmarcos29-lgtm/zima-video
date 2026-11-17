@@ -66,13 +66,15 @@ const People = (() => {
     const card = el('div', 'pp-card');
     const pctDone = st.videos ? Math.round((st.analyzed / st.videos) * 100) : 0;
     card.innerHTML = `
-      <div class="pp-stat"><b>${st.analyzed}</b> de ${st.videos} vídeos analisados${st.failed ? ` · ${st.failed} com erro` : ''}</div>
+      <div class="pp-stat"><b>${st.analyzed}</b> de ${st.videos} vídeos analisados${st.failed ? ` · ${st.failed} com erro` : ''}${st.skipped ? ` · ${st.skipped} em pastas excluídas` : ''}</div>
       <div class="pp-progress"><div style="width:${pctDone}%"></div></div>
       <div class="pp-sub">${w.length ? (online ? `Ajudante ativo: ${esc(online.name)} — ${esc(online.info || '')}` : `Ajudante desligado (${esc(w[0].name)}, visto ${ago(w[0].lastSeen)})`) : 'Nenhum ajudante conectado ainda: a análise de rostos roda no seu PC.'}</div>`;
     const btns = el('div', 'pp-actions');
     const cb = el('button', 'btn primary', `${icon('add')}${w.length ? 'Ajudante / conectar outro PC' : 'Conectar ajudante (PC)'}`); cb.onclick = connectSheet;
     btns.appendChild(cb);
     if (st.failed) { const rb = el('button', 'btn', 'Tentar de novo os com erro'); rb.onclick = async () => { await apiPost('people/reanalyze', null, { failed: true }); toast('Os vídeos com erro voltam para a fila'); render(); }; btns.appendChild(rb); }
+    const exb = el('button', 'btn', `Pastas excluídas${st.excluded.length ? ` (${st.excluded.length})` : ''}`); exb.onclick = excludedSheet;
+    btns.appendChild(exb);
     card.appendChild(btns);
     body.appendChild(card);
 
@@ -288,5 +290,49 @@ const People = (() => {
     return words.reduce((acc, w) => acc.replace(new RegExp(`(${w.split('').map((ch) => ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[^a-z0-9]?')})`, 'i'), '<mark>$1</mark>'), n);
   }
 
-  return { show, close, get open() { return open; } };
+  // ================================================================ pastas fora da análise de rosto
+  let excluded = null;
+  async function loadExcluded() { try { excluded = (await api('people/exclude')).excluded; } catch { excluded = []; } return excluded; }
+  const isExcluded = (p) => (excluded || []).some((x) => p === x || p.startsWith(x + '/'));
+  async function setExcluded(p, on) {
+    try {
+      excluded = (await apiPost('people/exclude', null, { path: p, on })).excluded;
+      toast(on ? `“${basename(p) || 'Início'}” não será mais analisada por rosto` : `“${basename(p) || 'Início'}” volta para a análise de rosto`);
+      if (open) render();
+    } catch (e) { toast(e.message); }
+  }
+  // linha no menu ⋮ de uma pasta (modo administrador)
+  function folderRow(b, e) {
+    if (excluded === null) loadExcluded();
+    const on = isExcluded(e.path);
+    const parentEx = on && !excluded.includes(e.path);
+    Sheet.row(b, { ico: 'person', label: parentEx ? 'Sem análise de rosto (pasta acima excluída)' : on ? 'Voltar a analisar rostos nesta pasta' : 'Não analisar rostos nesta pasta',
+      onClick: () => { Sheet.close(); if (parentEx) whenHistoryIdle(excludedSheet); else setExcluded(e.path, !on); } });
+  }
+  async function excludedSheet() {
+    await loadExcluded();
+    Sheet.open((b) => {
+      Sheet.header(b, 'Pastas excluídas');
+      b.appendChild(el('div', 'sheet-note', 'Os vídeos destas pastas (e das subpastas) não são enviados ao ajudante, e os rostos já encontrados nelas deixam de aparecer nos grupos e nas sugestões. A busca pelo nome do arquivo continua valendo.'));
+      if (!excluded.length) b.appendChild(el('div', 'sheet-note', 'Nenhuma pasta excluída.'));
+      for (const p of excluded) Sheet.row(b, { ico: 'folder', label: p || 'Início', value: 'Incluir de novo', onClick: async () => { await setExcluded(p, false); excludedSheet(); } });
+      Sheet.row(b, { ico: 'add', label: 'Excluir uma pasta…', onClick: () => pickFolder(B.tagView ? '' : B.path) });
+    });
+  }
+  // navegador de pastas simples para escolher qual excluir
+  async function pickFolder(cur) {
+    let items = [];
+    try { items = (await api('list', { path: cur })).entries.filter((i) => i.type === 'dir').map((i) => ({ ...i, path: cur ? `${cur}/${i.name}` : i.name })); } catch (e) { toast(e.message); }
+    Sheet.open((b) => {
+      Sheet.header(b, cur ? basename(cur) : 'Início', cur ? () => pickFolder(dirname(cur)) : () => excludedSheet());
+      if (cur) {
+        const on = isExcluded(cur);
+        Sheet.row(b, { ico: on ? 'check' : 'close', label: on ? 'Esta pasta já está excluída' : 'Excluir esta pasta da análise de rosto', onClick: on ? null : async () => { await setExcluded(cur, true); excludedSheet(); } });
+      }
+      if (!items.length) b.appendChild(el('div', 'sheet-note', 'Sem subpastas.'));
+      for (const d of items) Sheet.row(b, { ico: 'folder', label: d.name, value: isExcluded(d.path) ? 'excluída' : null, chevron: true, onClick: () => pickFolder(d.path) });
+    });
+  }
+
+  return { show, close, folderRow, loadExcluded, get open() { return open; } };
 })();
