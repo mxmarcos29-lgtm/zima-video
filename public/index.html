@@ -60,6 +60,11 @@
   <symbol id="i-theater-exit" viewBox="0 0 24 24"><path d="M19 4H5c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 14H5V6h14v12zM7 9h10v6H7z"/></symbol>
   <symbol id="i-split" viewBox="0 0 24 24"><path d="M3 3h8v8H3V3zm2 2v4h4V5H5zm8-2h8v8h-8V3zm2 2v4h4V5h-4zM3 13h8v8H3v-8zm2 2v4h4v-4H5zm8-2h8v8h-8v-8zm2 2v4h4v-4h-4z"/></symbol>
   <symbol id="i-add" viewBox="0 0 24 24"><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></symbol>
+  <symbol id="i-tag" viewBox="0 0 24 24"><path d="M21.41 11.58l-9-9C12.05 2.22 11.55 2 11 2H4c-1.1 0-2 .9-2 2v7c0 .55.22 1.05.59 1.42l9 9c.36.36.86.58 1.41.58.55 0 1.05-.22 1.41-.59l7-7c.37-.36.59-.86.59-1.41 0-.55-.23-1.06-.59-1.42zM5.5 7C4.67 7 4 6.33 4 5.5S4.67 4 5.5 4 7 4.67 7 5.5 6.33 7 5.5 7z"/></symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24"><path d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04a.996.996 0 0 0 0-1.41l-2.34-2.34a.996.996 0 0 0-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></symbol>
+  <symbol id="i-delete" viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></symbol>
+  <symbol id="i-move" viewBox="0 0 24 24"><path d="M20 6h-8l-2-2H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2zm-6 12v-3h-4v-4h4V8l5 5-5 5z"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24"><path d="M18 8h-1V6c0-2.76-2.24-5-5-5S7 3.24 7 6v2H6c-1.1 0-2 .9-2 2v10c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V10c0-1.1-.9-2-2-2zm-6 9c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2zm3.1-9H8.9V6c0-1.71 1.39-3.1 3.1-3.1 1.71 0 3.1 1.39 3.1 3.1v2z"/></symbol>
   <symbol id="i-speed" viewBox="0 0 24 24"><path d="M20.38 8.57l-1.23 1.85a8 8 0 0 1-.22 7.58H5.07A8 8 0 0 1 15.58 6.85l1.85-1.23A10 10 0 0 0 3.35 19a2 2 0 0 0 1.72 1h13.85a2 2 0 0 0 1.74-1 10 10 0 0 0-.27-10.44zm-9.79 6.84a2 2 0 0 0 2.83 0l5.66-8.49-8.49 5.66a2 2 0 0 0 0 2.83z"/></symbol>
 </svg>
 
@@ -80,6 +85,7 @@
   </header>
   <nav class="crumbs" id="crumbs"></nav>
   <main id="browser">
+    <section id="tag-home" class="tag-home hidden"><h2>Tags</h2><div class="chips-row" id="tag-home-list"></div></section>
     <section id="favorites" class="favorites hidden">
       <h2>Favoritos</h2>
       <ul class="list" id="fav-list"></ul>
@@ -88,6 +94,7 @@
       <h2>Continuar assistindo</h2>
       <div class="hscroll" id="continue-list"></div>
     </section>
+    <div id="tag-filter" class="tag-filter hidden"></div>
     <ul id="list" class="list"></ul>
     <div id="empty" class="empty hidden"></div>
     <div id="loading" class="loading hidden"><div class="spinner"></div></div>
@@ -195,6 +202,17 @@
     <button class="icon-btn g-nav" id="g-next" aria-label="Próxima"><svg><use href="#i-right"/></svg></button>
   </div>
 
+  <!-- ============ BARRA DE SELEÇÃO (administrador) ============ -->
+  <div id="selbar" class="selbar hidden">
+    <button class="icon-btn" id="sel-close" aria-label="Sair da seleção" title="Sair da seleção (Esc)"><svg><use href="#i-close"/></svg></button>
+    <span id="sel-count"></span>
+    <button class="icon-btn" id="sel-all" aria-label="Selecionar tudo" title="Selecionar tudo (Ctrl+A)"><svg><use href="#i-check"/></svg></button>
+    <button class="icon-btn" id="sel-tags" aria-label="Tags" title="Tags"><svg><use href="#i-tag"/></svg></button>
+    <button class="icon-btn" id="sel-move" aria-label="Mover" title="Mover"><svg><use href="#i-move"/></svg></button>
+    <button class="icon-btn" id="sel-rename" aria-label="Renomear" title="Renomear (F2)"><svg><use href="#i-edit"/></svg></button>
+    <button class="icon-btn" id="sel-delete" aria-label="Excluir" title="Excluir (Delete)"><svg><use href="#i-delete"/></svg></button>
+  </div>
+
   <!-- ============ TELA DIVIDIDA ============ -->
   <div id="split" class="split hidden" role="dialog" aria-label="Tela dividida">
     <div class="split-bar">
@@ -217,5 +235,6 @@
 <script src="app.js"></script>
 <script src="gallery.js"></script>
 <script src="split.js"></script>
+<script src="admin.js"></script>
 </body>
 </html>

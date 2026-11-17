@@ -129,9 +129,15 @@ addEventListener('popstate', (e) => {
   if (pendingBacks > 0) pendingBacks--;
   if (layers.length) { const l = layers.pop(); l.close(); return; }
   const st = e.state || {};
+  if (st.tag || (!st.dir && tagFromHash())) { Tags.openView(st.tag || tagFromHash(), false); return; }
   B.load(st.dir != null ? st.dir : pathFromHash(), false);
 });
+function tagFromHash() {
+  const m = /^#tag=(.*)$/.exec(location.hash);
+  try { return m ? decodeURIComponent(m[1]) : null; } catch { return null; }
+}
 function pathFromHash() {
+  if (tagFromHash() != null) return '';
   const h = location.hash.replace(/^#\/?/, '');
   try { return decodeURIComponent(h); } catch { return h; }
 }
@@ -210,6 +216,7 @@ const Side = {
         this.link(box, typeIcon(f.type), f.name, f.type === 'dir' && f.path === cur, () => { if (Search.open) Search.close(true); openEntry(f); }, true);
       }
     }
+    Tags.sideSection(box);
     if (this.roots.length) {
       box.appendChild(el('div', 'side-h', 'Pastas'));
       for (const r of this.roots) {
@@ -228,7 +235,9 @@ const B = {
   async load(p, push = true) {
     p = (p || '').replace(/^\/+|\/+$/g, '');
     const seq = ++this.loadSeq;
-    if (push && p !== this.path) history.pushState({ dir: p }, '', '#/' + encodeURIComponent(p).replace(/%2F/g, '/'));
+    if (p !== this.path || this.tagView) Tags.filter.clear();
+    const fromTag = !!this.tagView; this.tagView = null;
+    if (push && (p !== this.path || fromTag)) history.pushState({ dir: p }, '', '#/' + encodeURIComponent(p).replace(/%2F/g, '/'));
     this.path = p;
     this.renderChrome();
     const list = $('#list');
@@ -238,6 +247,7 @@ const B = {
       const r = await api('list', { path: p });
       if (seq !== this.loadSeq) return;
       this.entries = r.entries;
+      this.loaded = true;
       this.render();
       window.scrollTo(0, store.get('scroll:' + p, 0));
     } catch (e) {
@@ -285,10 +295,12 @@ const B = {
 
   visible() {
     const media = new Set(['dir', 'video', 'audio', 'image']);
-    return this.sorted(this.entries.filter((e) => !prefs.mediaOnly || media.has(e.type)));
+    return this.sorted(Tags.applyFilter(this.entries.filter((e) => !prefs.mediaOnly || media.has(e.type))));
   },
 
   render() {
+    if (this.tagView) return Tags.renderView();
+    Tags.renderFilterBar(); Tags.renderHome();
     const list = $('#list');
     list.className = 'list' + (prefs.view === 'grid' ? ' grid' : '');
     list.innerHTML = '';
@@ -305,6 +317,7 @@ const B = {
     this.renderFavorites();
     this.renderContinue();
     if (P.item) markPlaying(P.item.path);
+    Admin.afterRender();
     Preview.refresh();
   },
 
@@ -380,7 +393,8 @@ function renderItem(e, { showPath = false, highlight = null } = {}) {
   let name = esc(e.type === 'video' ? stripExt(e.name) : e.name);
   if (highlight) name = highlightTerms(name, highlight);
   if (Fav.has(e.path)) name = `<svg class="fav-star"><use href="#i-star"/></svg>` + name;
-  li.innerHTML = `${thumb}<div class="item-body"><div class="item-name">${name}</div>` +
+  li._entry = e;
+  li.innerHTML = `<span class="sel-box">${icon('check')}</span>${thumb}<div class="item-body"><div class="item-name">${name}</div>` + Tags.chips(e.tags) +
     (showPath ? `<div class="item-path">&lrm;${esc(dirname(e.path) || 'Início')}&lrm;</div>` : '') +
     `<div class="item-meta">${esc(meta.join(' · '))}</div></div>` +
     `<button class="icon-btn item-more" aria-label="Mais opções">${icon('more')}</button>`;
@@ -390,10 +404,13 @@ function renderItem(e, { showPath = false, highlight = null } = {}) {
     else loadThumb(img, e.path);
   }
   li.onclick = (ev) => {
+    if (Admin.selecting && !ev.target.closest('.item-more')) { ev.stopPropagation(); return Admin.toggle(e, li); }
     if (ev.target.closest('.item-more')) { ev.stopPropagation(); return itemMenu(e); }
     openEntry(e);
   };
-  bindLongPress(li, () => itemMenu(e));
+  if (Admin.selecting && Admin.sel.has(e.path)) li.classList.add('selected');
+  // segurar: no modo administrador seleciona (como em gerenciadores de arquivos); senão abre o menu
+  bindLongPress(li, () => (Admin.logged ? Admin.startSelect(e, li) : itemMenu(e)));
   return li;
 }
 
@@ -470,10 +487,12 @@ function itemMenu(e) {
     Sheet.row(b, { ico: fav ? 'star' : 'star-o', label: fav ? 'Remover dos favoritos' : 'Adicionar aos favoritos', onClick: () => { Sheet.close(); Fav.toggle(e.path, e.name); } });
     if (e.type === 'dir') {
       Sheet.row(b, { ico: 'link', label: 'Copiar link da pasta', onClick: () => { Sheet.close(); copyText(`${location.origin}/#/${encodeURIComponent(e.path).replace(/%2F/g, '/')}`); } });
+      Admin.itemRows(b, e);
       return;
     }
     Sheet.row(b, { ico: 'download', label: 'Baixar', onClick: () => { Sheet.close(); location.href = fileUrl(e.path, { download: 1 }); } });
     Sheet.row(b, { ico: 'link', label: 'Copiar link do arquivo', onClick: () => { Sheet.close(); copyText(location.origin + fileUrl(e.path)); } });
+    Admin.itemRows(b, e);
     if (e.size) b.appendChild(el('div', 'sheet-note', esc([fmtSize(e.size), e.mtime ? new Date(e.mtime).toLocaleString('pt-BR') : ''].filter(Boolean).join(' · '))));
   });
 }
@@ -492,6 +511,7 @@ function browserMenu() {
     Sheet.row(b, { ico: 'autoplay', label: 'Prévia em vídeo nas miniaturas', toggle: true, on: prefs.previews, onClick: (ev) => { prefs.previews = !prefs.previews; savePrefs(); ev.currentTarget.classList.toggle('on', prefs.previews); if (!prefs.previews) Preview.stop(); else Preview.refresh(); } });
     Sheet.row(b, { ico: prefs.view === 'grid' ? 'list' : 'grid', label: prefs.view === 'grid' ? 'Ver em lista' : 'Ver em grade', onClick: () => { toggleView(); Sheet.close(); } });
     Sheet.row(b, { ico: 'refresh', label: 'Atualizar pasta', onClick: () => { Sheet.close(); B.load(B.path, false); } });
+    Admin.menuRows(b);
     Sheet.row(b, { ico: 'search', label: 'Reindexar pesquisa', onClick: async () => { Sheet.close(); toast('Reindexando…'); try { const r = await api('reindex'); toast(`${r.count.toLocaleString('pt-BR')} itens indexados`); } catch (e) { toast(e.message); } } });
   });
 }
@@ -1830,10 +1850,14 @@ document.addEventListener('keydown', (e) => {
 }
 
 // ===================================================================== início
-const favLoaded = Fav.load();
-Side.init();
-B.load(pathFromHash(), false).then(async () => {
-  history.replaceState({ dir: B.path }, '', location.href);
-  await favLoaded; B.render();
+// espera os outros scripts (galeria, tela dividida, administrador/tags) antes de desenhar a lista
+addEventListener('DOMContentLoaded', () => {
+  const favLoaded = Fav.load();
+  Side.init();
+  B.load(pathFromHash(), false).then(async () => {
+    if (tagFromHash() != null) { history.replaceState({ tag: tagFromHash() }, '', location.href); Tags.openView(tagFromHash(), false); return; }
+    history.replaceState({ dir: B.path }, '', location.href);
+    await favLoaded; B.render();
+  });
 });
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.getRegistrations().then(() => {});

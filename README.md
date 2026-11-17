@@ -47,6 +47,24 @@ Vídeo: mp4, m4v, mkv, webm, mov, avi, wmv, flv, mpg/mpeg, ts/m2ts/mts, vob, 3gp
 
 Se a reprodução direta falhar, o player tenta o próximo modo sozinho. No menu ⚙ há a opção "Forçar conversão".
 
+## Novidades no computador
+
+- **Player:** anterior/play/próximo, volume (passe o mouse no alto-falante), tempo, legendas, configurações, modo teatro, PiP e tela cheia na barra inferior; barra de progresso que engrossa e mostra a miniatura ao passar o mouse.
+- **Modo teatro** (botão ▭ ou tecla `T`): o vídeo ocupa toda a janela, a lista vai para baixo.
+- **Tela dividida:** até 4 vídeos ao mesmo tempo. Abra pelo menu ⋮ de um vídeo → *Abrir na tela dividida*, pelo ⚙ do player ou pelo botão **+**. Clique num vídeo para ouvir o som dele, duplo clique amplia, teclas `1`–`4` selecionam.
+
+## Gerenciar arquivos (modo administrador) e tags
+
+1. Defina `ADMIN_PASSWORD` no app (ZimaOS → app Zima Video → configurações → variáveis) e confira que as pastas **não** estão com `:ro` nos volumes.
+2. No app: menu ⋮ → **Entrar no modo administrador**.
+3. Segure um item (ou ⋮ → *Selecionar itens*) para selecionar vários. A barra de baixo tem **Tags**, **Mover**, **Renomear** e **Excluir**. No PC: `Ctrl+A`, `F2` renomeia, `Delete` exclui, `Esc` sai.
+4. Pelo menu ⋮ de cada item também dá para renomear, mover, excluir e editar tags; no menu do topo, **Nova pasta aqui** e **Lixeira**.
+
+- **Excluir vai para a lixeira** (pasta oculta `.zima-lixeira` no mesmo disco). Restaure ou apague definitivamente em ⋮ → *Lixeira*.
+- Pastas de volume (DATA, Discos) não podem ser renomeadas, movidas nem excluídas.
+- Favoritos, tags e progresso acompanham arquivos renomeados ou movidos.
+- **Tags:** cada tag tem uma cor; marque em vários itens de uma vez (estado misto quando só parte tem a tag). Filtre a pasta atual pela barra de tags, ou abra uma tag (início, barra lateral) para ver os itens dela em todas as pastas. Renomear, mudar a cor ou excluir uma tag: ⋮ ao lado dela.
+
 ## Instalação no ZimaOS
 
 ### Opção 1 — Importar o compose (recomendado)
@@ -102,7 +120,8 @@ Se a GPU falhar com algum arquivo, o servidor volta automaticamente para convers
 | `PREVIEWS` | `1` | `0` desativa as prévias em vídeo |
 | `PREVIEW_CONCURRENCY` | `1` | Prévias geradas em paralelo |
 | `SEARCH_INDEX_TTL` | `600` | Segundos até reindexar a pesquisa |
-| `DATA_DIR` | `CACHE_DIR` | Onde fica `favorites.json` |
+| `DATA_DIR` | `CACHE_DIR` | Onde ficam `favorites.json`, `tags.json` e `trash.json` |
+| `ADMIN_PASSWORD` | vazio | Senha do modo administrador; vazio = desativado |
 | `SHOW_HIDDEN` | `0` | `1` mostra arquivos ocultos (`.x`, `@eaDir`…) |
 
 ## Dicas

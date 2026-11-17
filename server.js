@@ -148,7 +148,7 @@ async function listDir(rel) {
       const s = stats[k];
       if (!s) return;
       const dir = s.isDirectory();
-      entries.push({ name: d.name, type: dir ? 'dir' : typeOf(d.name), size: dir ? 0 : s.size, mtime: s.mtimeMs });
+      entries.push({ name: d.name, type: dir ? 'dir' : typeOf(d.name), size: dir ? 0 : s.size, mtime: s.mtimeMs, tags: tagsOf(relOf(path.join(abs, d.name))) });
     });
   }
   return { path: relOf(abs), entries };
@@ -211,7 +211,7 @@ async function search(q, scope, mediaOnly) {
   const top = results.slice(0, 300);
   const withStat = await Promise.all(top.map(async (it) => {
     const s = await statSafe(path.join(ROOT, it.p));
-    return { path: it.p, name: path.posix.basename(it.p), type: it.t, size: s && !it.d ? s.size : 0, mtime: s ? s.mtimeMs : 0 };
+    return { path: it.p, name: path.posix.basename(it.p), type: it.t, size: s && !it.d ? s.size : 0, mtime: s ? s.mtimeMs : 0, tags: tagsOf(it.p) };
   }));
   return { results: withStat, total, indexedAt: indexBuiltAt };
 }
@@ -700,7 +700,7 @@ async function listFavorites() {
     const st = await statSafe(path.join(ROOT, f.path));
     const dir = st ? st.isDirectory() : f.type === 'dir';
     return { path: f.path, name: path.posix.basename(f.path) || 'Início', type: dir ? 'dir' : typeOf(f.path),
-      size: st && !dir ? st.size : 0, mtime: st ? st.mtimeMs : 0, added: f.added, missing: !st };
+      size: st && !dir ? st.size : 0, mtime: st ? st.mtimeMs : 0, added: f.added, missing: !st, tags: tagsOf(f.path) };
   }));
   return { items };
 }
@@ -716,6 +716,334 @@ async function setFavorite(rel, on) {
   } else if (!on && i >= 0) favs.splice(i, 1);
   await saveFavorites();
   return listFavorites();
+}
+
+// ---------------------------------------------------------------- JSON persistente (escrita atômica e em fila)
+const jsonWrites = new Map();
+function saveJSON(file, data) {
+  const body = JSON.stringify(data, null, 1);
+  const prev = jsonWrites.get(file) || Promise.resolve();
+  const next = prev.then(async () => {
+    await fsp.mkdir(path.dirname(file), { recursive: true });
+    await fsp.writeFile(file + '.tmp', body);
+    await fsp.rename(file + '.tmp', file);
+  }).catch((e) => console.warn('[dados]', path.basename(file), e.message));
+  jsonWrites.set(file, next);
+  return next;
+}
+async function loadJSON(file, def) { try { return JSON.parse(await fsp.readFile(file, 'utf8')); } catch { return def; } }
+
+// ---------------------------------------------------------------- tags
+const TAG_FILE = path.join(DATA_DIR, 'tags.json');
+const TAG_COLORS = ['#7c5cff', '#ff5c7a', '#2bb673', '#ffb020', '#3ea6ff', '#ff7a2f', '#c05cff', '#14b8a6', '#e5484d', '#8d9eff'];
+let tagDb = null;
+async function loadTags() {
+  if (!tagDb) {
+    tagDb = await loadJSON(TAG_FILE, null);
+    if (!tagDb || typeof tagDb !== 'object') tagDb = {};
+    tagDb.tags = tagDb.tags || {}; tagDb.items = tagDb.items || {};
+  }
+  return tagDb;
+}
+const saveTags = () => saveJSON(TAG_FILE, tagDb);
+const tagsOf = (rel) => (tagDb && tagDb.items[rel]) || undefined;
+function cleanTagName(n) {
+  n = String(n || '').replace(/\s+/g, ' ').trim().slice(0, 40);
+  if (!n) throw new HttpError(400, 'Nome de tag vazio');
+  return n;
+}
+async function listTags() {
+  const db = await loadTags();
+  const count = {};
+  for (const list of Object.values(db.items)) for (const t of list) count[t] = (count[t] || 0) + 1;
+  const tags = Object.entries(db.tags).map(([name, v]) => ({ name, color: v.color, count: count[name] || 0 }))
+    .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR', { sensitivity: 'base' }));
+  return { tags };
+}
+async function assignTags({ paths, add = [], remove = [] }) {
+  const db = await loadTags();
+  if (!Array.isArray(paths) || !paths.length) throw new HttpError(400, 'Nenhum item selecionado');
+  add = add.map(cleanTagName); remove = remove.map(cleanTagName);
+  for (const t of add) if (!db.tags[t]) db.tags[t] = { color: TAG_COLORS[Object.keys(db.tags).length % TAG_COLORS.length] };
+  for (const raw of paths) {
+    const rel = relOf(resolveSafe(raw));
+    if (!(await statSafe(path.join(ROOT, rel)))) continue;
+    const set = new Set(db.items[rel] || []);
+    add.forEach((t) => set.add(t)); remove.forEach((t) => set.delete(t));
+    if (set.size) db.items[rel] = [...set].sort(); else delete db.items[rel];
+  }
+  await saveTags();
+  return listTags();
+}
+async function editTag({ name, newName, color, remove }) {
+  const db = await loadTags();
+  name = cleanTagName(name);
+  if (!db.tags[name]) throw new HttpError(404, 'Tag não encontrada');
+  if (remove) {
+    delete db.tags[name];
+    for (const [k, list] of Object.entries(db.items)) { const l = list.filter((t) => t !== name); if (l.length) db.items[k] = l; else delete db.items[k]; }
+  } else {
+    if (color && /^#[0-9a-f]{6}$/i.test(color)) db.tags[name].color = color;
+    if (newName && cleanTagName(newName) !== name) {
+      const nn = cleanTagName(newName);
+      if (db.tags[nn]) throw new HttpError(409, 'Já existe uma tag com esse nome');
+      db.tags[nn] = db.tags[name]; delete db.tags[name];
+      for (const [k, list] of Object.entries(db.items)) db.items[k] = [...new Set(list.map((t) => (t === name ? nn : t)))].sort();
+    }
+  }
+  await saveTags();
+  return listTags();
+}
+async function itemsWithTag(tag) {
+  const db = await loadTags();
+  const out = [];
+  for (const [rel, list] of Object.entries(db.items)) {
+    if (!list.includes(tag)) continue;
+    const st = await statSafe(path.join(ROOT, rel));
+    if (!st) continue;
+    const dir = st.isDirectory();
+    out.push({ path: rel, name: path.posix.basename(rel), type: dir ? 'dir' : typeOf(rel), size: dir ? 0 : st.size, mtime: st.mtimeMs, tags: list });
+  }
+  out.sort((a, b) => ((b.type === 'dir') - (a.type === 'dir')) || a.name.localeCompare(b.name, 'pt-BR', { numeric: true }));
+  return { items: out };
+}
+
+// ---------------------------------------------------------------- administração (gerenciar arquivos)
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
+let adminSecret = null;
+async function getAdminSecret() {
+  if (adminSecret) return adminSecret;
+  const f = path.join(DATA_DIR, 'admin.key');
+  let salt = (await loadJSON(f, null)) || null;
+  if (!salt) { salt = crypto.randomBytes(32).toString('hex'); await saveJSON(f, salt); }
+  adminSecret = crypto.createHash('sha256').update(`${salt}|${ADMIN_PASSWORD}`).digest();
+  return adminSecret;
+}
+function cookies(req) {
+  const out = {};
+  for (const part of String(req.headers.cookie || '').split(';')) { const i = part.indexOf('='); if (i > 0) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim()); }
+  return out;
+}
+async function isAdmin(req) {
+  if (!ADMIN_PASSWORD) return false;
+  const c = cookies(req).zv_admin; if (!c) return false;
+  const [exp, sig] = c.split('.');
+  if (!exp || !sig || !(+exp > Date.now())) return false;
+  const good = crypto.createHmac('sha256', await getAdminSecret()).update(exp).digest('hex');
+  return sig.length === good.length && crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(good));
+}
+function readBody(req, limit = 1024 * 1024) {
+  return new Promise((resolve, reject) => {
+    let size = 0; const chunks = [];
+    req.on('data', (d) => { size += d.length; if (size > limit) { reject(new HttpError(413, 'Requisição grande demais')); req.destroy(); } else chunks.push(d); });
+    req.on('end', () => { try { resolve(chunks.length ? JSON.parse(Buffer.concat(chunks).toString()) : {}); } catch { reject(new HttpError(400, 'JSON inválido')); } });
+    req.on('error', reject);
+  });
+}
+// toda alteração: POST + cabeçalho próprio (bloqueia formulários de outros sites) + sessão de administrador
+async function requireAdmin(req) {
+  if (req.method !== 'POST') throw new HttpError(405, 'Use POST');
+  if (req.headers['x-zv'] !== '1') throw new HttpError(403, 'Requisição inválida');
+  if (!ADMIN_PASSWORD) throw new HttpError(403, 'Modo administrador desativado: defina ADMIN_PASSWORD no servidor');
+  if (!(await isAdmin(req))) throw new HttpError(401, 'Entre no modo administrador');
+}
+const loginFails = new Map(); // ip -> { n, until }
+async function adminLogin(req, res) {
+  if (req.method !== 'POST' || req.headers['x-zv'] !== '1') throw new HttpError(403, 'Requisição inválida');
+  if (!ADMIN_PASSWORD) throw new HttpError(403, 'Modo administrador desativado: defina ADMIN_PASSWORD no servidor');
+  const ip = req.socket.remoteAddress || '?';
+  const f = loginFails.get(ip);
+  if (f && f.until > Date.now()) throw new HttpError(429, `Muitas tentativas. Tente de novo em ${Math.ceil((f.until - Date.now()) / 60000)} min`);
+  const { password } = await readBody(req);
+  const a = crypto.createHash('sha256').update(String(password || '')).digest();
+  const b = crypto.createHash('sha256').update(ADMIN_PASSWORD).digest();
+  if (!crypto.timingSafeEqual(a, b)) {
+    const n = (f ? f.n : 0) + 1;
+    loginFails.set(ip, { n, until: n >= 5 ? Date.now() + 10 * 60000 : 0 });
+    await new Promise((r) => setTimeout(r, 800));
+    throw new HttpError(401, 'Senha incorreta');
+  }
+  loginFails.delete(ip);
+  const exp = String(Date.now() + 30 * 86400000);
+  const sig = crypto.createHmac('sha256', await getAdminSecret()).update(exp).digest('hex');
+  res.setHeader('Set-Cookie', `zv_admin=${exp}.${sig}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${30 * 86400}`);
+  return { ok: true };
+}
+
+function validName(n) {
+  n = String(n || '').trim();
+  if (!n || n === '.' || n === '..' || /[\/\\\0]/.test(n) || n.length > 255) throw new HttpError(400, 'Nome inválido');
+  return n;
+}
+function fsError(e) {
+  if (e instanceof HttpError) return e;
+  if (e.code === 'EROFS' || e.code === 'EACCES' || e.code === 'EPERM') {
+    return new HttpError(403, 'Sem permissão de escrita: a pasta está montada como somente leitura (veja "Gerenciar arquivos" no README)');
+  }
+  if (e.code === 'EEXIST' || e.code === 'ENOTEMPTY') return new HttpError(409, 'Já existe um item com esse nome');
+  if (e.code === 'ENOENT') return new HttpError(404, 'Item não encontrado');
+  if (e.code === 'EBUSY') return new HttpError(409, 'Item em uso');
+  return new HttpError(500, e.message);
+}
+/** Item que pode ser alterado: dentro de ROOT e abaixo das pastas de volume (DATA, Discos…). */
+function editablePath(rel) {
+  const abs = resolveSafe(rel);
+  const r = relOf(abs);
+  if (!r || !r.includes('/')) throw new HttpError(403, 'Pastas de volume não podem ser alteradas');
+  return abs;
+}
+async function freeName(dir, name) {
+  const ext = path.extname(name); const base = ext && ext.length < name.length ? name.slice(0, -ext.length) : name;
+  let cand = name; let i = 2;
+  while (await exists(path.join(dir, cand))) cand = `${base} (${i++})${ext && ext.length < name.length ? ext : ''}`;
+  return cand;
+}
+async function moveFs(from, to) {
+  try { await fsp.rename(from, to); }
+  catch (e) {
+    if (e.code !== 'EXDEV') throw e;
+    await fsp.cp(from, to, { recursive: true, errorOnExist: true, force: false, preserveTimestamps: true });
+    await fsp.rm(from, { recursive: true, force: true });
+  }
+}
+/** Atualiza favoritos, tags e índice quando algo muda de caminho (inclui o conteúdo de pastas). */
+async function relocate(pairs) {
+  const favs = await loadFavorites(); const db = await loadTags();
+  let favChanged = false; let tagChanged = false;
+  const map = (p) => { for (const [a, b] of pairs) { if (p === a) return b; if (p.startsWith(a + '/')) return b + p.slice(a.length); } return null; };
+  for (const f of favs) { const n = map(f.path); if (n !== null) { f.path = n; favChanged = true; } }
+  for (const k of Object.keys(db.items)) { const n = map(k); if (n !== null) { db.items[n] = db.items[k]; delete db.items[k]; tagChanged = true; } }
+  if (favChanged) await saveFavorites();
+  if (tagChanged) await saveTags();
+  indexBuiltAt = 0; // a pesquisa reindexa na próxima consulta
+}
+async function forget(rels) {
+  // remove favoritos/tags de itens apagados; devolve o que foi removido (para restaurar da lixeira)
+  const favs = await loadFavorites(); const db = await loadTags();
+  const under = (p, a) => p === a || p.startsWith(a + '/');
+  const saved = { favs: [], tags: {} };
+  for (const a of rels) {
+    for (let i = favs.length - 1; i >= 0; i--) if (under(favs[i].path, a)) { saved.favs.push(favs[i]); favs.splice(i, 1); }
+    for (const k of Object.keys(db.items)) if (under(k, a)) { saved.tags[k] = db.items[k]; delete db.items[k]; }
+  }
+  await saveFavorites(); await saveTags();
+  indexBuiltAt = 0;
+  return saved;
+}
+
+// lixeira: fica no mesmo disco do item (mover é instantâneo), registrada em trash.json
+const TRASH_FILE = path.join(DATA_DIR, 'trash.json');
+const TRASH_DIR = '.zima-lixeira';
+async function mountRoot(abs) {
+  // sobe a partir da pasta do item enquanto continuar no mesmo disco (st.dev), sem sair de ROOT
+  const dev = (await fsp.stat(abs)).dev;
+  let cur = path.dirname(abs);
+  while (cur !== ROOT) {
+    const parent = path.dirname(cur);
+    const ps = await statSafe(parent);
+    if (!ps || ps.dev !== dev) break;
+    cur = parent;
+  }
+  return cur;
+}
+async function loadTrash() { const t = await loadJSON(TRASH_FILE, []); return Array.isArray(t) ? t : []; }
+
+async function fsAction(action, body) {
+  try {
+    switch (action) {
+      case 'mkdir': {
+        const dir = resolveSafe(body.path || '');
+        const name = validName(body.name);
+        await fsp.mkdir(path.join(dir, name));
+        return { ok: true, path: relOf(path.join(dir, name)) };
+      }
+      case 'rename': {
+        const abs = editablePath(body.path);
+        const name = validName(body.name);
+        const to = path.join(path.dirname(abs), name);
+        if (to === abs) return { ok: true, moved: [] };
+        if (await exists(to) && to.toLowerCase() !== abs.toLowerCase()) throw new HttpError(409, 'Já existe um item com esse nome');
+        await fsp.rename(abs, to);
+        const pair = [relOf(abs), relOf(to)];
+        await relocate([pair]);
+        return { ok: true, moved: [pair] };
+      }
+      case 'move': {
+        const dest = resolveSafe(body.dest || '');
+        const ds = await statSafe(dest);
+        if (!ds || !ds.isDirectory()) throw new HttpError(400, 'Pasta de destino inválida');
+        const moved = []; const errors = [];
+        for (const rel of body.paths || []) {
+          try {
+            const abs = editablePath(rel);
+            if (dest === abs || dest.startsWith(abs + path.sep)) throw new HttpError(400, 'Não dá para mover uma pasta para dentro dela mesma');
+            if (path.dirname(abs) === dest) continue;
+            const to = path.join(dest, await freeName(dest, path.basename(abs)));
+            await moveFs(abs, to);
+            moved.push([relOf(abs), relOf(to)]);
+          } catch (e) { errors.push(`${path.posix.basename(String(rel))}: ${fsError(e).message}`); }
+        }
+        if (moved.length) await relocate(moved);
+        return { ok: !errors.length, moved, errors };
+      }
+      case 'delete': {
+        const trash = await loadTrash(); const done = []; const errors = [];
+        for (const rel of body.paths || []) {
+          try {
+            const abs = editablePath(rel);
+            const st = await fsp.stat(abs);
+            const tdir = path.join(await mountRoot(abs), TRASH_DIR);
+            await fsp.mkdir(tdir, { recursive: true });
+            const id = `${Date.now().toString(36)}${crypto.randomBytes(3).toString('hex')}`;
+            const stored = path.join(tdir, `${id}-${path.basename(abs)}`);
+            await fsp.rename(abs, stored);
+            const r = relOf(abs);
+            const saved = await forget([r]);
+            trash.push({ id, original: r, stored: relOf(stored), name: path.basename(abs), dir: st.isDirectory(), size: st.isDirectory() ? 0 : st.size, deletedAt: Date.now(), saved });
+            done.push(r);
+          } catch (e) { errors.push(`${path.posix.basename(String(rel))}: ${fsError(e).message}`); }
+        }
+        await saveJSON(TRASH_FILE, trash);
+        return { ok: !errors.length, deleted: done, errors };
+      }
+      case 'trash': return { items: (await loadTrash()).map(({ saved, ...t }) => t).reverse() };
+      case 'restore': {
+        const trash = await loadTrash(); const restored = []; const errors = [];
+        for (const id of body.ids || []) {
+          const i = trash.findIndex((t) => t.id === id); if (i < 0) continue;
+          const t = trash[i];
+          try {
+            const target = resolveSafe(t.original);
+            await fsp.mkdir(path.dirname(target), { recursive: true });
+            const to = path.join(path.dirname(target), await freeName(path.dirname(target), path.basename(target)));
+            await fsp.rename(resolveSafe(t.stored), to);
+            const newRel = relOf(to);
+            // devolve favoritos e tags (ajustando o caminho se precisou de outro nome)
+            const favs = await loadFavorites(); const db = await loadTags();
+            const fix = (p) => (p === t.original ? newRel : p.startsWith(t.original + '/') ? newRel + p.slice(t.original.length) : p);
+            for (const f of (t.saved && t.saved.favs) || []) favs.push({ ...f, path: fix(f.path) });
+            for (const [k, v] of Object.entries((t.saved && t.saved.tags) || {})) db.items[fix(k)] = v;
+            await saveFavorites(); await saveTags();
+            trash.splice(i, 1); restored.push(newRel);
+          } catch (e) { errors.push(`${t.name}: ${fsError(e).message}`); }
+        }
+        await saveJSON(TRASH_FILE, trash); indexBuiltAt = 0;
+        return { ok: !errors.length, restored, errors };
+      }
+      case 'purge': {
+        const trash = await loadTrash();
+        const ids = body.all ? trash.map((t) => t.id) : (body.ids || []);
+        const keep = [];
+        for (const t of trash) {
+          if (!ids.includes(t.id)) { keep.push(t); continue; }
+          try { await fsp.rm(resolveSafe(t.stored), { recursive: true, force: true }); } catch (e) { keep.push(t); }
+        }
+        await saveJSON(TRASH_FILE, keep);
+        return { ok: true, remaining: keep.length };
+      }
+      default: throw new HttpError(404, 'Ação desconhecida');
+    }
+  } catch (e) { throw fsError(e); }
 }
 
 // ---------------------------------------------------------------- static
@@ -798,6 +1126,20 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(200, { 'Content-Type': 'text/vtt; charset=utf-8', 'Cache-Control': 'private, max-age=3600' });
         return res.end(vtt);
       }
+      case '/api/admin/login': return sendJSON(res, await adminLogin(req, res));
+      case '/api/admin/logout':
+        res.setHeader('Set-Cookie', 'zv_admin=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0');
+        return sendJSON(res, { ok: true });
+      case '/api/admin/status': return sendJSON(res, { enabled: !!ADMIN_PASSWORD, logged: await isAdmin(req) });
+      case '/api/fs': { await requireAdmin(req); return sendJSON(res, await fsAction(q.get('action'), await readBody(req))); }
+      case '/api/tags': {
+        if (req.method === 'POST') {
+          await requireAdmin(req); const body = await readBody(req);
+          return sendJSON(res, q.get('action') === 'edit' ? await editTag(body) : await assignTags(body));
+        }
+        if (q.get('tag')) return sendJSON(res, await itemsWithTag(q.get('tag')));
+        return sendJSON(res, await listTags());
+      }
       case '/api/favorites': {
         if (req.method === 'POST') return sendJSON(res, await setFavorite(q.get('path') || '', q.get('on') !== '0'));
         return sendJSON(res, await listFavorites());
@@ -816,6 +1158,8 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`Zima Video em http://0.0.0.0:${PORT}  (mídia: ${ROOT}, cache: ${CACHE}, hwaccel: ${HWACCEL})`);
   getIndex().catch((e) => console.warn('[busca] falha ao indexar:', e.message));
+  loadTags().catch(() => {});
+  if (ADMIN_PASSWORD) console.log('Modo administrador: ativado'); else console.log('Modo administrador: desativado (defina ADMIN_PASSWORD para gerenciar arquivos)');
 });
 
 process.on('SIGTERM', () => {
