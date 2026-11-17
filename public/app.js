@@ -534,7 +534,8 @@ $('#brand').onclick = () => B.load('');
 $('#btn-view').onclick = toggleView;
 // cor estável: impede o Chromium de mandar o vídeo para o plano de hardware (só promove vídeos 100% opacos e
 // sem efeitos), então ele continua sendo desenhado pelo navegador com a mesma cor da página.
-//   off = desligado · light = opacidade 99,9% (invisível) · strong = filtro neutro (garante, usa um pouco mais de GPU)
+//   off = desligado · light = opacidade 99,9% · strong = filtro neutro + opacidade (padrão no Windows: confirmado
+//   num monitor HDR em que só a opacidade não bastava)
 const COLOR_MODES = { off: 'Desligada', light: 'Leve', strong: 'Forte' };
 function setColorMode(m) {
   if (!COLOR_MODES[m]) m = 'off';
@@ -547,13 +548,13 @@ function colorMenu(back) {
     Sheet.header(b, 'Cor estável do vídeo', back);
     b.appendChild(el('div', 'sheet-note', 'Em alguns monitores (principalmente com HDR do Windows ligado, no Chrome/Edge) a cor do vídeo muda quando ele começa a tocar — o navegador passa o vídeo para um plano de hardware onde o driver altera as cores. Esta opção mantém o vídeo desenhado pelo navegador, com a cor da página.'));
     for (const [k, label] of Object.entries(COLOR_MODES)) {
-      const desc = { off: 'Comportamento padrão do navegador', light: 'Opacidade 99,9% — invisível, resolve na maioria dos casos', strong: 'Filtro neutro — use se o Leve não resolver (um pouco mais de GPU)' }[k];
+      const desc = { off: 'Comportamento padrão do navegador', light: 'Só opacidade 99,9% — mais leve, mas pode não bastar', strong: 'Filtro neutro — recomendado (um pouco mais de GPU)' }[k];
       Sheet.row(b, { label: `${label} — ${desc}`, sel: (prefs.colorFix || 'off') === k, onClick: () => { setColorMode(k); colorMenu(back); } });
     }
     b.appendChild(el('div', 'sheet-note', 'Com a cor estável ligada, realces de vídeo do driver (ex.: RTX Video Super Resolution/HDR da NVIDIA) deixam de ser aplicados.'));
   });
 }
-setColorMode(prefs.colorFix || (IS_WIN_CHROMIUM ? 'light' : 'off'));
+setColorMode(prefs.colorFix || (IS_WIN_CHROMIUM ? 'strong' : 'off'));
 
 // modo discreto: esconde as miniaturas (nem baixa as imagens) — a prévia em vídeo continua funcionando
 function setDiscreet(on, announce = true) {
