@@ -110,7 +110,15 @@ function pushLayer(name, close) {
 }
 function closeLayer(name) {
   const top = layers[layers.length - 1];
-  if (top && (!name || top.name === name)) history.back();
+  if (top && (!name || top.name === name)) goBack();
+}
+// history.back() é assíncrono: conta os "voltar" pendentes para abrir novas camadas só depois
+let pendingBacks = 0;
+function goBack() { pendingBacks++; history.back(); }
+function whenHistoryIdle(fn) {
+  const t0 = Date.now();
+  const tick = () => (pendingBacks > 0 && Date.now() - t0 < 1500 ? setTimeout(tick, 16) : fn());
+  tick();
 }
 function dropLayer(name) {
   // remove sem mexer no histórico (ex.: camada fechada por outra ação)
@@ -118,6 +126,7 @@ function dropLayer(name) {
   if (i >= 0) layers.splice(i, 1);
 }
 addEventListener('popstate', (e) => {
+  if (pendingBacks > 0) pendingBacks--;
   if (layers.length) { const l = layers.pop(); l.close(); return; }
   const st = e.state || {};
   B.load(st.dir != null ? st.dir : pathFromHash(), false);
@@ -443,6 +452,7 @@ function itemMenu(e) {
     b.appendChild(el('div', 'sheet-title', esc(e.name)));
     if (e.type === 'video' || e.type === 'audio') {
       Sheet.row(b, { ico: 'play', label: 'Reproduzir', onClick: () => { Sheet.close(); openEntry(e); } });
+      if (e.type === 'video') Sheet.row(b, { ico: 'split', label: 'Abrir na tela dividida', value: Split.count ? `${Split.count}/4` : null, onClick: () => { Sheet.close(); whenHistoryIdle(() => Split.add(e)); } });
       if (progress[e.path] && progress[e.path].t > 5) {
         Sheet.row(b, { ico: 'replay', label: 'Reproduzir do início', onClick: () => { Sheet.close(); P.open(e, { from: 0 }); } });
       }
@@ -1011,7 +1021,7 @@ const P = {
     this.saveProgress(); flushProgress();
     this.loadSeq++;
     this.cancelUpnext();
-    if (this.state === 'max') { dropLayer('player'); history.back(); }
+    if (this.state === 'max') { dropLayer('player'); goBack(); }
     if (this.fs) this.exitFullscreen();
     this.destroySource();
     this.item = null; this.info = null;
@@ -1448,6 +1458,10 @@ function settingsMenu() {
     }
     Sheet.row(b, { ico: 'autoplay', label: 'Reprodução automática', toggle: true, on: prefs.autoplay, onClick: (e) => { prefs.autoplay = !prefs.autoplay; savePrefs(); e.currentTarget.classList.toggle('on', prefs.autoplay); } });
     Sheet.row(b, { ico: 'repeat', label: 'Repetir', toggle: true, on: prefs.loop, onClick: (e) => { prefs.loop = !prefs.loop; savePrefs(); e.currentTarget.classList.toggle('on', prefs.loop); } });
+    if (info.video) Sheet.row(b, { ico: 'split', label: 'Abrir na tela dividida', onClick: () => {
+      Sheet.close(); const it = P.item; const at = P.time();
+      whenHistoryIdle(() => { P.close(); whenHistoryIdle(() => Split.add(it, at)); });
+    } });
     if (!$('#btn-pip').classList.contains('hidden')) Sheet.row(b, { ico: 'pip', label: 'Picture-in-picture', onClick: () => { Sheet.close(); togglePiP(); } });
     const modeTxt = { direct: 'Reprodução direta (arquivo original)', remux: 'Remux: vídeo original, áudio convertido', hls: 'Convertendo no servidor (ffmpeg)' }[P.mode];
     b.appendChild(el('div', 'sheet-note', `${esc(modeTxt || '')}<br>${esc(info.format)} · ${info.video ? esc(info.video.codec) + ' ' + info.video.width + '×' + info.video.height : 'áudio'}${info.audio[P.audio] ? ' · ' + esc(info.audio[P.audio].codec) : ''}${info.bitrate ? ' · ' + Math.round(info.bitrate / 1000) + ' kb/s' : ''}`));

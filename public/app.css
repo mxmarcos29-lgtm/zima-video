@@ -559,6 +559,47 @@ video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: con
   .player.max.theater #d-list::before { content: none; }
 }
 
+/* ============================================================= tela dividida */
+.split { position: fixed; inset: 0; z-index: 55; background: #000; display: flex; flex-direction: column; }
+.split-bar { display: flex; align-items: center; gap: 8px; padding: calc(4px + var(--safe-t)) 12px 4px; background: var(--bg); }
+.split-title { flex: 1; font-weight: 600; }
+.split-title span { color: var(--muted); font-weight: 400; font-size: 13px; margin-left: 6px; }
+.split-grid { flex: 1; min-height: 0; display: grid; gap: 4px; padding: 4px; grid-template-columns: 1fr; grid-auto-rows: 1fr; }
+.split-grid[data-n="2"] { grid-template-columns: 1fr 1fr; }
+.split-grid[data-n="3"], .split-grid[data-n="4"], .split-grid[data-n="5"] { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+@media (orientation: portrait) {
+  /* em pé: vídeos empilhados; o "+" vira uma faixa fina */
+  .split-grid, .split-grid[data-n] { display: flex; flex-direction: column; }
+  .split-grid > .s-tile { flex: 1 1 0; }
+  .split-grid > .split-add { flex: 0 0 52px; flex-direction: row; }
+  .split-grid > .split-add svg { width: 26px; height: 26px; }
+  .split-grid:not(:has(.s-tile)) > .split-add { flex: 1 1 0; }
+}
+.split-hint { color: var(--muted); font-size: 12px; text-align: center; padding: 4px 8px calc(6px + var(--safe-b)); background: var(--bg); }
+.s-tile { position: relative; background: #000; border-radius: 8px; overflow: hidden; outline: 2px solid transparent; outline-offset: -2px; min-height: 0; }
+.s-tile.focus { outline-color: var(--accent); }
+.s-tile video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+.s-spin { position: absolute; left: 50%; top: 50%; margin: -16px; }
+.s-ui { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: space-between; opacity: 0; transition: opacity .2s;
+  background: linear-gradient(rgba(0,0,0,.6), transparent 28%, transparent 66%, rgba(0,0,0,.75)); }
+.s-tile:hover .s-ui, .s-tile.focus .s-ui { opacity: 1; }
+@media (hover: hover) { .s-tile.focus:not(:hover) .s-ui { opacity: 0; } }
+.s-top, .s-bottom { display: flex; align-items: center; gap: 2px; padding: 4px 6px; }
+.s-name { flex: 1; min-width: 0; font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding-left: 4px; }
+.s-time { font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; padding: 0 6px; }
+.s-seek { flex: 1; height: 16px; position: relative; cursor: pointer; display: flex; align-items: center; }
+.s-seek::before { content: ""; position: absolute; left: 0; right: 0; height: 4px; border-radius: 2px; background: rgba(255,255,255,.25); }
+.s-prog { position: absolute; left: 0; height: 4px; border-radius: 2px; background: var(--danger); width: 0; }
+.s-mute { display: inline-flex; padding: 6px; cursor: pointer; }
+.s-mute svg { width: 20px; height: 20px; }
+.s-tile .icon-btn { width: 38px; height: 38px; }
+.s-tile .icon-btn svg { width: 22px; height: 22px; }
+.split-add { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; border: 2px dashed rgba(255,255,255,.18); border-radius: 8px; color: var(--muted); min-height: 0; }
+.split-add:hover { border-color: rgba(255,255,255,.4); color: var(--text); }
+.split-add svg { width: 40px; height: 40px; }
+.split-grid.has-solo { grid-template-columns: 1fr !important; grid-template-rows: 1fr !important; }
+.split-grid.has-solo > :not(.solo) { display: none; }
+
 /* ============================================================= tela cheia
    No fim do arquivo e com especificidade maior: precisa vencer as regras de vídeo vertical
    (.portrait-video) e do layout desktop em duas colunas, senão o vídeo fica cortado. */
