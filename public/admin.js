@@ -539,6 +539,12 @@ const Admin = {
       const box = ui.list; box.innerHTML = '';
       const ql = norm(q.trim());
       const local = ql ? dirs.filter((d) => norm(d.name).includes(ql)) : dirs;
+      // pesquisou um nome que não existe aqui: oferece criar a pasta com esse nome (e já entra nela)
+      if (ql && !dirs.some((d) => norm(d.name) === ql)) {
+        const c = el('button', 'row tag-create', `${icon('add')}<span class="lbl">Criar pasta “${esc(q.trim())}” em ${esc(basename(cur) || 'Início')}</span>`);
+        c.onclick = () => createHere(q.trim());
+        box.appendChild(c);
+      }
       if (ql && local.length) box.appendChild(el('div', 'move-sec', 'Nesta pasta'));
       for (const d of local) {
         const p = (cur ? cur + '/' : '') + d.name;
@@ -574,6 +580,10 @@ const Admin = {
       renderList();
       ui.list.scrollTop = 0;
     };
+    const createHere = async (name) => {
+      try { const r = await apiPost('fs', { action: 'mkdir' }, { path: cur, name }); toast(`Pasta “${name}” criada`); go(r.path); }
+      catch (e) { toast(e.message); }
+    };
     let tm;
     const onSearch = () => {
       q = ui.input.value; renderList();
@@ -599,13 +609,20 @@ const Admin = {
       const sb = el('div', 'move-search');
       sb.innerHTML = `${icon('search')}<input type="search" placeholder="Pesquisar pasta…" autocomplete="off" enterkeyhint="search">`;
       const input = $('input', sb); input.addEventListener('input', onSearch);
-      input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { const first = $('.row:not(.disabled)', ui.list); if (first) first.click(); } });
+      input.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        // Enter abre a primeira pasta encontrada; só cria uma nova se nada foi encontrado
+        const first = $('.row:not(.disabled):not(.tag-create)', ui.list) || $('.tag-create', ui.list);
+        if (first) first.click();
+      });
       const rec = el('div', 'move-rec');
       top.append(h, path, sb, rec);
       const list = el('div', 'move-list');
       const bar = el('div', 'move-actions');
       const nf = el('button', 'btn', `${icon('add')}Nova pasta`);
-      nf.onclick = () => this.prompt('Nova pasta', 'Nova pasta', async (name) => {
+      // o nome já vem com o que foi digitado na pesquisa
+      nf.onclick = () => this.prompt('Nova pasta', q.trim() || 'Nova pasta', async (name) => {
         try { const r = await apiPost('fs', { action: 'mkdir' }, { path: cur, name }); whenHistoryIdle(() => { this.move(items); setTimeout(() => go(r.path), 50); }); }
         catch (e) { toast(e.message); }
       });
