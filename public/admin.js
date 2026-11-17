@@ -262,15 +262,45 @@ const Admin = {
   // ---------- seleção
   startSelect(e, li) {
     if (!this.logged) return itemMenu(e);
-    if (!this.selecting) { this.selecting = true; document.body.classList.add('selecting'); }
+    this.enter();
     navigator.vibrate && navigator.vibrate(15);
     this.toggle(e, li, true);
+    // continuar arrastando o dedo depois de segurar marca todos os itens pelo caminho
+    this.touchDrag = { base: new Map(this.sel), start: li };
   },
   toggle(e, li, force) {
     const on = force != null ? force : !this.sel.has(e.path);
     if (on) this.sel.set(e.path, e); else this.sel.delete(e.path);
-    if (li) li.classList.toggle('selected', on);
+    if (li) { li.classList.toggle('selected', on); this.anchor = li; }
     this.updateBar();
+  },
+  items() { return [...document.querySelectorAll('#list .item')].filter((li) => li._entry); },
+  enter() { if (!this.selecting) { this.selecting = true; document.body.classList.add('selecting'); } },
+  setSel(lis, on = true) {
+    for (const li of lis) {
+      const e = li._entry; if (!e) continue;
+      if (on) this.sel.set(e.path, e); else this.sel.delete(e.path);
+      li.classList.toggle('selected', on);
+    }
+    this.updateBar();
+  },
+  // marca do último item clicado até este (Shift+clique / arrastar o dedo)
+  range(li, base) {
+    const all = this.items(); const a = all.indexOf(this.anchor); const b = all.indexOf(li);
+    if (a < 0 || b < 0) return this.toggle(li._entry, li, true);
+    const [i, j] = a < b ? [a, b] : [b, a];
+    if (base) { this.sel = new Map(base); all.forEach((x) => x.classList.toggle('selected', this.sel.has(x._entry.path))); }
+    this.setSel(all.slice(i, j + 1), true);
+  },
+  // clique num item: Ctrl/⌘ alterna, Shift marca o intervalo; durante a seleção, clique simples alterna
+  click(e, li, ev) {
+    const mod = ev.ctrlKey || ev.metaKey || ev.shiftKey;
+    if (!this.selecting && !(this.logged && mod)) return false;
+    ev.preventDefault();
+    this.enter();
+    if (ev.shiftKey && this.anchor && document.contains(this.anchor)) this.range(li);
+    else this.toggle(e, li);
+    return true;
   },
   exitSelect() {
     this.selecting = false; this.sel.clear();
@@ -278,11 +308,11 @@ const Admin = {
     document.querySelectorAll('.item.selected').forEach((n) => n.classList.remove('selected'));
     this.updateBar();
   },
+  allSelected() { const all = this.items(); return all.length > 0 && all.every((li) => this.sel.has(li._entry.path)); },
   selectAll() {
-    document.querySelectorAll('#list .item').forEach((li) => {
-      const e = li._entry; if (e) { this.sel.set(e.path, e); li.classList.add('selected'); }
-    });
-    this.updateBar();
+    this.enter();
+    if (this.allSelected()) this.setSel(this.items(), false); // segundo toque: limpa
+    else this.setSel(this.items(), true);
   },
   afterRender() {
     if (!this.selecting) return;
@@ -295,6 +325,7 @@ const Admin = {
     if (!this.selecting) return;
     const n = this.sel.size;
     $('#sel-count').textContent = n ? `${n} ${n > 1 ? 'itens' : 'item'}` : 'Selecione';
+    $('#sel-all').textContent = this.allSelected() ? 'Limpar' : 'Selecionar tudo';
     $('#sel-rename').disabled = n !== 1;
     for (const id of ['#sel-move', '#sel-delete', '#sel-tags']) $(id).disabled = !n;
   },
@@ -358,40 +389,103 @@ const Admin = {
       Sheet.row(b, { ico: 'close', label: 'Cancelar', onClick: () => Sheet.close() });
     }));
   },
-  // escolher pasta de destino navegando pelas pastas
+  // escolher pasta de destino: navegar, pesquisar (no servidor inteiro) ou usar um destino recente
   move(items) {
     const paths = items.map((i) => i.path);
     let cur = B.tagView ? dirname(paths[0]) : B.path;
-    const draw = async () => {
-      let dirs = [];
-      try { dirs = B.sorted((await api('list', { path: cur })).entries.filter((x) => x.type === 'dir')); } catch (e) { toast(e.message); }
-      Sheet.open((b) => {
-        Sheet.header(b, items.length > 1 ? `Mover ${items.length} itens para…` : `Mover “${items[0].name}” para…`, cur ? () => { cur = dirname(cur); draw(); } : null);
-        b.appendChild(el('div', 'move-path', `${icon('folder')}<span>${esc(cur || 'Início')}</span>`));
-        for (const d of dirs) {
-          const p = (cur ? cur + '/' : '') + d.name;
-          const isSel = paths.includes(p);
-          const r = Sheet.row(b, { ico: 'folder', label: d.name, chevron: !isSel, onClick: () => { if (!isSel) { cur = p; draw(); } } });
-          if (isSel) r.classList.add('disabled');
+    let dirs = []; let q = ''; let seq = 0; let found = null;
+    const blocked = (p) => paths.some((x) => p === x || p.startsWith(x + '/')); // não dá para mover para dentro de si mesmo
+    const recents = () => store.get('moveRecent', []).filter((p) => p !== cur && !blocked(p));
+    let ui = null;
+
+    const renderList = () => {
+      const box = ui.list; box.innerHTML = '';
+      const ql = norm(q.trim());
+      const local = ql ? dirs.filter((d) => norm(d.name).includes(ql)) : dirs;
+      if (ql && local.length) box.appendChild(el('div', 'move-sec', 'Nesta pasta'));
+      for (const d of local) {
+        const p = (cur ? cur + '/' : '') + d.name;
+        const r = Sheet.row(box, { ico: 'folder', label: d.name, chevron: !blocked(p), onClick: () => { if (!blocked(p)) go(p); } });
+        if (blocked(p)) r.classList.add('disabled');
+      }
+      if (found && ql) {
+        const others = found.filter((f) => dirname(f.path) !== cur);
+        if (others.length) box.appendChild(el('div', 'move-sec', 'Em todas as pastas'));
+        for (const f of others) {
+          const r = Sheet.row(box, { ico: 'folder', label: f.name, value: dirname(f.path) || 'Início', chevron: !blocked(f.path), onClick: () => { if (!blocked(f.path)) go(f.path); } });
+          if (blocked(f.path)) r.classList.add('disabled');
         }
-        if (!dirs.length) b.appendChild(el('div', 'sheet-note', 'Nenhuma subpasta aqui.'));
-        const bar = el('div', 'move-actions');
-        const nf = el('button', 'btn', `${icon('add')}Nova pasta`);
-        nf.onclick = () => this.prompt('Nova pasta', 'Nova pasta', async (name) => {
-          try { const r = await apiPost('fs', { action: 'mkdir' }, { path: cur, name }); cur = r.path; } catch (e) { toast(e.message); }
-          draw();
-        });
-        const ok = el('button', 'btn primary', 'Mover para cá');
-        ok.disabled = !cur.includes('/') && false;
-        ok.onclick = () => {
-          Sheet.close();
-          whenHistoryIdle(() => this.run('move', { paths, dest: cur }, `${items.length > 1 ? items.length + ' itens movidos' : 'Movido'} para ${cur || 'Início'}`)
-            .then(() => this.exitSelect(), () => {}));
-        };
-        bar.append(nf, ok); b.appendChild(bar);
-      });
+        if (!local.length && !others.length) box.appendChild(el('div', 'sheet-note', 'Nenhuma pasta encontrada.'));
+      } else if (!local.length) box.appendChild(el('div', 'sheet-note', ql ? 'Nenhuma subpasta com esse nome aqui — pesquisando em todas…' : 'Nenhuma subpasta aqui.'));
     };
-    this.need(draw);
+    const renderTop = () => {
+      ui.path.innerHTML = `${icon('folder')}<span>${esc(cur || 'Início')}</span>`;
+      ui.back.classList.toggle('hidden', !cur);
+      ui.rec.innerHTML = '';
+      const rs = recents();
+      ui.rec.classList.toggle('hidden', !rs.length);
+      if (rs.length) ui.rec.appendChild(el('span', 'move-rec-l', 'Recentes'));
+      for (const p of rs) { const c = el('button', 'chip', esc(basename(p) || 'Início')); c.title = p; c.onclick = () => go(p); ui.rec.appendChild(c); }
+      ui.ok.textContent = `Mover para ${cur ? '“' + basename(cur) + '”' : 'Início'}`;
+    };
+    const go = async (p) => {
+      cur = p; q = ''; found = null; ui.input.value = '';
+      renderTop(); ui.list.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+      const my = ++seq;
+      try { const r = await api('list', { path: cur }); if (my !== seq) return; dirs = B.sorted(r.entries.filter((x) => x.type === 'dir')); }
+      catch (e) { dirs = []; toast(e.message); }
+      renderList();
+      ui.list.scrollTop = 0;
+    };
+    let tm;
+    const onSearch = () => {
+      q = ui.input.value; renderList();
+      clearTimeout(tm);
+      if (q.trim().length < 2) { found = null; return; }
+      const my = ++seq;
+      tm = setTimeout(async () => {
+        try {
+          const r = await api('search', { q: q.trim(), media: 1 });
+          if (my !== seq) return;
+          found = r.results.filter((x) => x.type === 'dir'); renderList();
+        } catch { /* ignore */ }
+      }, 250);
+    };
+
+    this.need(() => Sheet.open((b) => {
+      b.classList.add('move-sheet');
+      const top = el('div', 'move-top');
+      const h = el('h3');
+      const back = el('button', 'icon-btn', icon('back')); back.title = 'Pasta acima'; back.onclick = () => go(dirname(cur));
+      h.append(back, document.createTextNode(items.length > 1 ? `Mover ${items.length} itens para…` : `Mover “${items[0].name}” para…`));
+      const path = el('div', 'move-path');
+      const sb = el('div', 'move-search');
+      sb.innerHTML = `${icon('search')}<input type="search" placeholder="Pesquisar pasta…" autocomplete="off" enterkeyhint="search">`;
+      const input = $('input', sb); input.addEventListener('input', onSearch);
+      input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { const first = $('.row:not(.disabled)', ui.list); if (first) first.click(); } });
+      const rec = el('div', 'move-rec');
+      top.append(h, path, sb, rec);
+      const list = el('div', 'move-list');
+      const bar = el('div', 'move-actions');
+      const nf = el('button', 'btn', `${icon('add')}Nova pasta`);
+      nf.onclick = () => this.prompt('Nova pasta', 'Nova pasta', async (name) => {
+        try { const r = await apiPost('fs', { action: 'mkdir' }, { path: cur, name }); whenHistoryIdle(() => { this.move(items); setTimeout(() => go(r.path), 50); }); }
+        catch (e) { toast(e.message); }
+      });
+      const ok = el('button', 'btn primary');
+      ok.onclick = () => {
+        const dest = cur;
+        store.set('moveRecent', [dest, ...store.get('moveRecent', []).filter((p) => p !== dest)].slice(0, 6));
+        Sheet.close();
+        whenHistoryIdle(() => this.run('move', { paths, dest }, `${items.length > 1 ? items.length + ' itens movidos' : 'Movido'} para ${dest || 'Início'}`)
+          .then(() => this.exitSelect(), () => {}));
+      };
+      bar.append(nf, ok);
+      b.append(top, list, bar);
+      ui = { path, back, rec, list, input, ok };
+      go(cur);
+      if (!IS_TOUCH) setTimeout(() => input.focus(), 60);
+    }));
   },
   async trash() {
     this.need(async () => {
@@ -432,7 +526,8 @@ const Admin = {
       return;
     }
     this.readonlyNote(b);
-    Sheet.row(b, { ico: 'check', label: 'Selecionar itens', onClick: () => { Sheet.close(); this.selecting = true; document.body.classList.add('selecting'); this.updateBar(); } });
+    Sheet.row(b, { ico: 'check', label: 'Selecionar itens', onClick: () => { Sheet.close(); this.enter(); this.updateBar(); } });
+    Sheet.row(b, { ico: 'check', label: 'Selecionar tudo desta pasta', onClick: () => { Sheet.close(); this.enter(); this.setSel(this.items(), true); } });
     if (!B.tagView) Sheet.row(b, { ico: 'add', label: 'Nova pasta aqui', onClick: () => this.newFolder() });
     Sheet.row(b, { ico: 'delete', label: 'Lixeira', onClick: () => this.trash() });
     if (!this.fromEnv) Sheet.row(b, { ico: 'lock', label: 'Trocar senha de administrador', onClick: () => this.changePassword() });
@@ -453,6 +548,76 @@ const typeOfName = (n) => {
   if (/^(jpg|jpeg|png|gif|webp|bmp|heic|avif)$/.test(x)) return 'image';
   return 'file';
 };
+
+// ---------- arrastar para selecionar
+(() => {
+  // rolagem automática perto das bordas enquanto arrasta
+  let scrollV = 0; let scrollTimer = null;
+  const autoScroll = (y) => {
+    const top = $('#crumbs').getBoundingClientRect().bottom; const edge = 56;
+    scrollV = y < top + edge ? -Math.ceil((top + edge - y) / 4) : y > innerHeight - edge ? Math.ceil((y - innerHeight + edge) / 4) : 0;
+    if (scrollV && !scrollTimer) scrollTimer = setInterval(() => { if (scrollV) scrollBy(0, scrollV); }, 16);
+    if (!scrollV && scrollTimer) { clearInterval(scrollTimer); scrollTimer = null; }
+  };
+  const stopScroll = () => { scrollV = 0; clearInterval(scrollTimer); scrollTimer = null; };
+
+  // celular: segurar um item e arrastar o dedo (impede a rolagem enquanto seleciona)
+  let lastY = 0;
+  document.addEventListener('touchmove', (ev) => {
+    const d = Admin.touchDrag; if (!d) return;
+    ev.preventDefault();
+    const t = ev.touches[0]; lastY = t.clientY;
+    const li = document.elementFromPoint(t.clientX, t.clientY);
+    const item = li && li.closest && li.closest('#list .item');
+    if (item && item._entry) { Admin.anchor = d.start; Admin.range(item, d.base); }
+    autoScroll(t.clientY);
+  }, { passive: false });
+  const endTouch = () => { if (Admin.touchDrag) { Admin.touchDrag = null; stopScroll(); } };
+  document.addEventListener('touchend', endTouch);
+  document.addEventListener('touchcancel', endTouch);
+
+  // mouse: arrastar desenha um retângulo; itens que ele toca ficam marcados (Ctrl/Shift soma à seleção)
+  const box = el('div', 'sel-rect hidden'); document.body.appendChild(box);
+  let drag = null;
+  $('#browser').addEventListener('pointerdown', (ev) => {
+    if (ev.pointerType !== 'mouse' || ev.button !== 0 || !Admin.logged) return;
+    if (ev.target.closest('button, a, input, .item-more, .tag-btn, .card, #continue, #favorites, #tag-home')) return;
+    const onItem = ev.target.closest('#list .item');
+    if (onItem && !Admin.selecting) return; // fora da seleção, clicar num item abre normalmente
+    drag = { x: ev.clientX, y: ev.clientY + scrollY, on: false, base: ev.ctrlKey || ev.metaKey || ev.shiftKey ? new Map(Admin.sel) : new Map() };
+  });
+  addEventListener('pointermove', (ev) => {
+    if (!drag || ev.pointerType !== 'mouse') return;
+    const y = ev.clientY + scrollY;
+    if (!drag.on) {
+      if (Math.hypot(ev.clientX - drag.x, y - drag.y) < 8) return;
+      drag.on = true; Admin.enter(); box.classList.remove('hidden'); document.body.classList.add('rubber');
+    }
+    const r = { l: Math.min(drag.x, ev.clientX), r: Math.max(drag.x, ev.clientX), t: Math.min(drag.y, y), b: Math.max(drag.y, y) };
+    Object.assign(box.style, { left: r.l + 'px', top: r.t - scrollY + 'px', width: r.r - r.l + 'px', height: r.b - r.t + 'px' });
+    Admin.sel = new Map(drag.base);
+    for (const li of Admin.items()) {
+      const q = li.getBoundingClientRect();
+      const hit = q.right > r.l && q.left < r.r && q.bottom + scrollY > r.t && q.top + scrollY < r.b;
+      if (hit) Admin.sel.set(li._entry.path, li._entry);
+      li.classList.toggle('selected', Admin.sel.has(li._entry.path));
+    }
+    Admin.updateBar();
+    autoScroll(ev.clientY);
+  });
+  addEventListener('pointerup', () => {
+    if (!drag) return;
+    if (drag.on) {
+      box.classList.add('hidden'); document.body.classList.remove('rubber'); stopScroll();
+      // o clique que encerra o arrasto não deve alternar o item embaixo do mouse
+      const eat = (e) => { e.stopPropagation(); e.preventDefault(); };
+      addEventListener('click', eat, { capture: true, once: true });
+      setTimeout(() => removeEventListener('click', eat, { capture: true }), 50);
+      if (!Admin.sel.size) Admin.updateBar();
+    }
+    drag = null;
+  });
+})();
 
 // barra de seleção
 $('#sel-close').onclick = () => Admin.exitSelect();

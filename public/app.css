@@ -689,3 +689,26 @@ body.selecting .toast { bottom: calc(84px + var(--safe-b)); }
 .login-form input + input { margin-top: 0; }
 .login-form input { flex-basis: 100%; }
 .login-form .btn { margin-left: auto; }
+
+.sel-allbtn { padding: 8px 12px; border-radius: 10px; font-size: 13.5px; font-weight: 600; color: var(--accent-2); white-space: nowrap; }
+.sel-allbtn:hover { background: rgba(255,255,255,.08); }
+.sel-rect { position: fixed; z-index: 47; border: 1px solid var(--accent-2); background: color-mix(in srgb, var(--accent) 18%, transparent); border-radius: 4px; pointer-events: none; }
+body.rubber, body.rubber * { user-select: none !important; cursor: default; }
+body.selecting #list .item { cursor: pointer; }
+
+/* seletor de pasta de destino (mover): topo e botões fixos, só a lista rola */
+.sheet.move-sheet-open { display: flex; flex-direction: column; overflow: hidden; height: 78vh; height: 78dvh; }
+.sheet.move-sheet-open .sheet-handle { flex: none; }
+#sheet-body.move-sheet { display: flex; flex-direction: column; min-height: 0; flex: 1; }
+.move-top { flex: none; }
+.move-top h3 { padding-left: 8px; }
+.move-search { display: flex; align-items: center; gap: 8px; margin: 2px 16px 8px; padding: 0 12px; height: 42px; border-radius: 21px; background: var(--surface-2); }
+.move-search svg { width: 20px; height: 20px; color: var(--muted); }
+.move-search input { flex: 1; min-width: 0; border: 0; outline: 0; background: transparent; color: var(--text); font: inherit; font-size: 16px; }
+.move-search input::-webkit-search-cancel-button { display: none; }
+.move-rec { display: flex; align-items: center; gap: 6px; overflow-x: auto; padding: 0 16px 8px; scrollbar-width: none; }
+.move-rec-l { color: var(--muted); font-size: 12.5px; flex: none; }
+.move-rec .chip { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.move-list { flex: 1; min-height: 120px; overflow-y: auto; border-top: 1px solid rgba(255,255,255,.06); border-bottom: 1px solid rgba(255,255,255,.06); }
+.move-sec { padding: 10px 20px 2px; font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+.move-list .row .val { max-width: 45%; }

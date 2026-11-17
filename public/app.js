@@ -147,8 +147,9 @@ const Sheet = {
   open(render) {
     const body = $('#sheet-body');
     const isOpen = !$('#sheet').classList.contains('hidden');
-    body.innerHTML = '';
+    body.innerHTML = ''; body.className = '';
     render(body);
+    $('#sheet').classList.toggle('move-sheet-open', body.classList.contains('move-sheet'));
     if (!isOpen) {
       $('#sheet').classList.remove('hidden'); $('#sheet-backdrop').classList.remove('hidden');
       pushLayer('sheet', () => Sheet.hide());
@@ -404,7 +405,7 @@ function renderItem(e, { showPath = false, highlight = null } = {}) {
     else loadThumb(img, e.path);
   }
   li.onclick = (ev) => {
-    if (Admin.selecting && !ev.target.closest('.item-more')) { ev.stopPropagation(); return Admin.toggle(e, li); }
+    if (!ev.target.closest('.item-more') && Admin.click(e, li, ev)) { ev.stopPropagation(); return; }
     if (ev.target.closest('.item-more')) { ev.stopPropagation(); return itemMenu(e); }
     openEntry(e);
   };
