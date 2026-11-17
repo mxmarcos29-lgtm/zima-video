@@ -974,7 +974,10 @@ async function relocate(pairs) {
   let favChanged = false; let tagChanged = false;
   const map = (p) => { for (const [a, b] of pairs) { if (p === a) return b; if (p.startsWith(a + '/')) return b + p.slice(a.length); } return null; };
   for (const f of favs) { const n = map(f.path); if (n !== null) { f.path = n; favChanged = true; } }
-  for (const k of Object.keys(db.items)) { const n = map(k); if (n !== null) { db.items[n] = db.items[k]; delete db.items[k]; tagChanged = true; } }
+  // monta um objeto novo (renomear "no lugar" estragaria trocas como A↔B)
+  const items = {};
+  for (const [k, v] of Object.entries(db.items)) { const n = map(k); if (n !== null) tagChanged = true; items[n !== null ? n : k] = v; }
+  db.items = items;
   if (favChanged) await saveFavorites();
   if (tagChanged) await saveTags();
   indexBuiltAt = 0; // a pesquisa reindexa na próxima consulta
@@ -1045,6 +1048,46 @@ async function fsAction(action, body) {
         const pair = [relOf(abs), relOf(to)];
         await relocate([pair]);
         return { ok: true, moved: [pair] };
+      }
+      case 'rename-many': {
+        // renomear em lote: valida tudo antes, depois renomeia em duas fases (via nomes temporários),
+        // o que permite trocas como A→B e B→A; se algo falhar no meio, desfaz.
+        const list = [];
+        for (const it of body.items || []) {
+          const abs = editablePath(it.path);
+          const name = validName(it.name);
+          const to = path.join(path.dirname(abs), name);
+          if (to !== abs) list.push({ abs, to });
+        }
+        if (!list.length) return { ok: true, moved: [] };
+        const sources = new Set(list.map((x) => x.abs));
+        const targets = new Set();
+        for (const x of list) {
+          if (targets.has(x.to)) throw new HttpError(409, `Nome repetido no lote: ${path.basename(x.to)}`);
+          targets.add(x.to);
+          if (!sources.has(x.to) && (await exists(x.to)) && x.to.toLowerCase() !== x.abs.toLowerCase()) {
+            throw new HttpError(409, `Já existe: ${path.basename(x.to)}`);
+          }
+          await fsp.access(path.dirname(x.abs), fs.constants.W_OK);
+        }
+        const tag = crypto.randomBytes(4).toString('hex');
+        const staged = []; // { abs, tmp, to }
+        try {
+          for (let i = 0; i < list.length; i++) {
+            const tmp = path.join(path.dirname(list[i].abs), `.zv-ren-${tag}-${i}`);
+            await fsp.rename(list[i].abs, tmp);
+            staged.push({ ...list[i], tmp, done: false });
+          }
+          for (const st of staged) { await fsp.rename(st.tmp, st.to); st.done = true; }
+        } catch (e) {
+          for (const st of staged.reverse()) {
+            try { await fsp.rename(st.done ? st.to : st.tmp, st.abs); } catch { /* melhor esforço */ }
+          }
+          throw e;
+        }
+        const pairs = list.map((x) => [relOf(x.abs), relOf(x.to)]);
+        await relocate(pairs);
+        return { ok: true, moved: pairs };
       }
       case 'move': {
         const dest = resolveSafe(body.dest || '');

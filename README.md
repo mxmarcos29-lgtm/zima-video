@@ -57,7 +57,9 @@ Se a reprodução direta falhar, o player tenta o próximo modo sozinho. No menu
 
 1. No app: menu ⋮ → **Criar senha de administrador** (só aparece enquanto não existe senha; depois vira **Entrar no modo administrador**). Para trocar: menu ⋮ → *Trocar senha de administrador*. Alternativa: definir a variável `ADMIN_PASSWORD` no app (tem prioridade).
 2. As pastas precisam estar graváveis (sem `:ro` nos volumes). Se estiverem somente leitura, o próprio menu avisa quais e como liberar.
-3. Segure um item (ou ⋮ → *Selecionar itens*) para selecionar vários. A barra de baixo tem **Tags**, **Mover**, **Renomear** e **Excluir**. No PC: `Ctrl+A`, `F2` renomeia, `Delete` exclui, `Esc` sai.
+3. Selecionar vários: segure um item e arraste o dedo pelos outros (celular), ou Ctrl/⌘+clique, Shift+clique e arrastar um retângulo com o mouse (PC). **Selecionar tudo** fica na barra de seleção e no menu ⋮. A barra tem **Tags**, **Mover**, **Renomear** e **Excluir**. No PC: `Ctrl+A`, `F2` renomeia, `Delete` exclui, `Esc` sai.
+   - **Renomear em lote** (vários selecionados → ✏): *Novo nome* com numeração (`Férias ##` → Férias 01, 02…), *Acrescentar* texto antes/depois do nome ou *Substituir* um trecho; prévia mostra antes → depois e bloqueia nomes repetidos.
+   - **Mover:** pesquise a pasta de destino (no servidor inteiro) ou use os destinos recentes.
 4. Pelo menu ⋮ de cada item também dá para renomear, mover, excluir e editar tags; no menu do topo, **Nova pasta aqui** e **Lixeira**.
 
 - **Excluir vai para a lixeira** (pasta oculta `.zima-lixeira` no mesmo disco). Restaure ou apague definitivamente em ⋮ → *Lixeira*.

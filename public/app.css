@@ -712,3 +712,27 @@ body.selecting #list .item { cursor: pointer; }
 .move-list { flex: 1; min-height: 120px; overflow-y: auto; border-top: 1px solid rgba(255,255,255,.06); border-bottom: 1px solid rgba(255,255,255,.06); }
 .move-sec { padding: 10px 20px 2px; font-size: 12px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
 .move-list .row .val { max-width: 45%; }
+
+/* renomear em lote */
+.rn-tabs { padding: 0 16px 8px; }
+.rn-opts { padding: 0 20px 6px; display: flex; flex-direction: column; gap: 8px; }
+.rn-opts .sheet-note { padding: 0; }
+.rn-field { display: flex; align-items: center; gap: 10px; }
+.rn-field span { flex: none; width: 120px; color: var(--muted); font-size: 13.5px; }
+.rn-field input {
+  flex: 1; min-width: 0; height: 40px; border-radius: 10px; border: 1px solid rgba(255,255,255,.15); background: var(--surface-2);
+  color: var(--text); padding: 0 12px; font: inherit; font-size: 15px; outline: none;
+}
+.rn-field input:focus { border-color: var(--accent); }
+.rn-field input[type=number] { max-width: 110px; flex: none; }
+.rn-check { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--muted); }
+.rn-prev { padding: 4px 0; }
+.rn-row { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 8px; align-items: center; padding: 7px 20px; font-size: 13.5px; }
+.rn-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rn-old { color: var(--muted); }
+.rn-arrow { color: var(--muted); }
+.rn-new { font-weight: 600; }
+.rn-row.same .rn-new { color: var(--muted); font-weight: 400; }
+.rn-row.err .rn-new { color: var(--danger); }
+.rn-err { grid-column: 3; font-size: 11.5px; color: var(--danger); margin-top: -4px; }
+@media (max-width: 520px) { .rn-field span { width: 92px; } .rn-row { font-size: 12.5px; } }

@@ -326,7 +326,8 @@ const Admin = {
     const n = this.sel.size;
     $('#sel-count').textContent = n ? `${n} ${n > 1 ? 'itens' : 'item'}` : 'Selecione';
     $('#sel-all').textContent = this.allSelected() ? 'Limpar' : 'Selecionar tudo';
-    $('#sel-rename').disabled = n !== 1;
+    $('#sel-rename').disabled = !n;
+    $('#sel-rename').title = n > 1 ? 'Renomear em lote' : 'Renomear (F2)';
     for (const id of ['#sel-move', '#sel-delete', '#sel-tags']) $(id).disabled = !n;
   },
 
@@ -345,11 +346,14 @@ const Admin = {
   },
   // progresso de reprodução fica neste aparelho: acompanha arquivos renomeados/movidos
   migrate(pairs) {
+    // monta o novo conjunto de uma vez (renomear "no lugar" estragaria trocas como A↔B)
+    const moved = {};
     for (const k of Object.keys(progress)) {
       for (const [a, b] of pairs) {
-        if (k === a || k.startsWith(a + '/')) { progress[b + k.slice(a.length)] = progress[k]; delete progress[k]; progressDirty = true; break; }
+        if (k === a || k.startsWith(a + '/')) { moved[b + k.slice(a.length)] = progress[k]; delete progress[k]; progressDirty = true; break; }
       }
     }
+    Object.assign(progress, moved);
     flushProgress();
     if (P.item) for (const [a, b] of pairs) if (P.item.path === a || P.item.path.startsWith(a + '/')) P.item.path = b + P.item.path.slice(a.length);
   },
@@ -367,6 +371,113 @@ const Admin = {
         if (selectBase && dot > 0) inp.setSelectionRange(0, dot); else inp.select();
       }, 60);
     });
+  },
+  // ---------- renomear em lote
+  renameMany(items) {
+    // ordem da lista na tela (a numeração segue o que o usuário está vendo)
+    const order = new Map(this.items().map((li, i) => [li._entry.path, i]));
+    items = items.slice().sort((a, b) => (order.get(a.path) ?? 1e9) - (order.get(b.path) ?? 1e9));
+    const split = (e) => {
+      if (e.type === 'dir') return [e.name, ''];
+      const i = e.name.lastIndexOf('.');
+      return i > 0 ? [e.name.slice(0, i), e.name.slice(i)] : [e.name, ''];
+    };
+    const folder = basename(B.tagView ? dirname(items[0].path) : B.path) || 'Arquivo';
+    const st = store.get('renameMany', {});
+    const o = { mode: st.mode || 'novo', tpl: st.tpl || `${folder} ##`, start: 1, pre: '', suf: '', find: '', repl: '', cs: false };
+    const esc2 = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+    const compute = () => items.map((e, i) => {
+      const [base, ext] = split(e);
+      let nb = base;
+      if (o.mode === 'novo') {
+        let t = o.tpl.trim();
+        if (!/#/.test(t)) t = items.length > 1 ? `${t} #` : t; // vários itens sem # → numera no fim
+        const n = o.start + i;
+        nb = t.replace(/#+/, (m) => String(n).padStart(Math.max(m.length, m.length === 1 ? String(o.start + items.length - 1).length : m.length), '0'));
+      } else if (o.mode === 'acrescentar') nb = `${o.pre}${base}${o.suf}`;
+      else if (o.find) nb = base.replace(new RegExp(esc2(o.find), o.cs ? 'g' : 'gi'), o.repl);
+      return { e, name: nb.trim() + ext };
+    });
+    const check = (res) => {
+      const seen = new Map(); const inBatch = new Set(items.map((e) => e.path));
+      const siblings = new Set(B.tagView ? [] : B.entries.map((x) => (B.path ? B.path + '/' : '') + x.name));
+      for (const r of res) {
+        const target = (dirname(r.e.path) ? dirname(r.e.path) + '/' : '') + r.name;
+        r.changed = r.name !== r.e.name;
+        if (!r.name.replace(/\.[^.]*$/, '').trim() || /[\/\\]/.test(r.name) || r.name === '.' || r.name === '..') r.err = 'nome inválido';
+        else if (seen.has(target)) { r.err = 'repetido'; seen.get(target).err = 'repetido'; }
+        else if (r.changed && siblings.has(target) && !inBatch.has(target)) r.err = 'já existe';
+        seen.set(target, r);
+      }
+      return res;
+    };
+    let ui;
+    const refresh = () => {
+      const res = check(compute());
+      ui.prev.innerHTML = '';
+      for (const r of res) {
+        const row = el('div', 'rn-row' + (r.err ? ' err' : r.changed ? '' : ' same'));
+        row.innerHTML = `<span class="rn-old">${esc(r.e.name)}</span><span class="rn-arrow">→</span><span class="rn-new">${esc(r.name)}</span>${r.err ? `<span class="rn-err">${r.err}</span>` : ''}`;
+        ui.prev.appendChild(row);
+      }
+      const bad = res.filter((r) => r.err).length; const n = res.filter((r) => r.changed && !r.err).length;
+      ui.ok.disabled = !!bad || !n;
+      ui.ok.textContent = bad ? `${bad} conflito${bad > 1 ? 's' : ''}` : n ? `Renomear ${n}` : 'Nada a mudar';
+      ui.res = res;
+    };
+    const field = (label, input) => { const f = el('label', 'rn-field'); f.appendChild(el('span', '', esc(label))); f.appendChild(input); return f; };
+    const inp = (val, ph, on, type = 'text') => {
+      const i = el('input'); i.type = type; i.value = val; i.placeholder = ph || '';
+      i.addEventListener('input', () => { on(i); refresh(); }); return i;
+    };
+    const drawMode = () => {
+      ui.opts.innerHTML = '';
+      ui.tabs.querySelectorAll('.chip').forEach((c) => c.classList.toggle('active', c.dataset.m === o.mode));
+      if (o.mode === 'novo') {
+        ui.opts.appendChild(field('Nome', inp(o.tpl, 'Ex.: Férias ##', (i) => { o.tpl = i.value; })));
+        const n = inp(String(o.start), '1', (i) => { o.start = Math.max(0, parseInt(i.value, 10) || 0); }, 'number'); n.min = '0';
+        ui.opts.appendChild(field('Começar em', n));
+        ui.opts.appendChild(el('div', 'sheet-note', 'Use <b>#</b> para o número (com zeros quando há 10 ou mais itens, para ficarem em ordem) · <b>##</b> → 01, 02… · <b>###</b> → 001… A extensão é mantida.'));
+      } else if (o.mode === 'acrescentar') {
+        ui.opts.appendChild(field('Antes do nome', inp(o.pre, 'Ex.: [2024] ', (i) => { o.pre = i.value; })));
+        ui.opts.appendChild(field('Depois do nome', inp(o.suf, 'Ex.: - Dublado', (i) => { o.suf = i.value; })));
+      } else {
+        ui.opts.appendChild(field('Procurar', inp(o.find, 'texto a trocar', (i) => { o.find = i.value; })));
+        ui.opts.appendChild(field('Substituir por', inp(o.repl, '(vazio = remover)', (i) => { o.repl = i.value; })));
+        const cb = el('label', 'rn-check'); cb.innerHTML = '<input type="checkbox"> Diferenciar maiúsculas/minúsculas';
+        $('input', cb).checked = o.cs; $('input', cb).onchange = (ev) => { o.cs = ev.target.checked; refresh(); };
+        ui.opts.appendChild(cb);
+      }
+      refresh();
+      const first = $('input', ui.opts); if (first && !IS_TOUCH) setTimeout(() => first.focus(), 30);
+    };
+    this.need(() => Sheet.open((b) => {
+      b.classList.add('move-sheet');
+      const top = el('div', 'move-top');
+      const h = el('h3'); h.textContent = `Renomear ${items.length} ${items.length > 1 ? 'itens' : 'item'}`;
+      const tabs = el('div', 'chips rn-tabs');
+      for (const [m, label] of [['novo', 'Novo nome'], ['acrescentar', 'Acrescentar'], ['substituir', 'Substituir']]) {
+        const c = el('button', 'chip', label); c.dataset.m = m; c.onclick = () => { o.mode = m; drawMode(); }; tabs.appendChild(c);
+      }
+      const opts = el('div', 'rn-opts');
+      top.append(h, tabs, opts);
+      const prev = el('div', 'move-list rn-prev');
+      const bar = el('div', 'move-actions');
+      const cancel = el('button', 'btn', 'Cancelar'); cancel.onclick = () => Sheet.close();
+      const ok = el('button', 'btn primary');
+      ok.onclick = () => {
+        const list = ui.res.filter((r) => r.changed).map((r) => ({ path: r.e.path, name: r.name }));
+        store.set('renameMany', { mode: o.mode, tpl: o.tpl });
+        Sheet.close();
+        whenHistoryIdle(() => this.run('rename-many', { items: list }, `${list.length} ${list.length > 1 ? 'itens renomeados' : 'item renomeado'}`)
+          .then(() => this.exitSelect(), () => {}));
+      };
+      bar.append(cancel, ok);
+      b.append(top, prev, bar);
+      ui = { tabs, opts, prev, ok };
+      drawMode();
+    }));
   },
   newFolder(dir = B.path) {
     this.need(() => this.prompt('Nova pasta', 'Nova pasta', (name) => this.run('mkdir', { path: dir, name }, 'Pasta criada')));
@@ -624,13 +735,16 @@ $('#sel-close').onclick = () => Admin.exitSelect();
 $('#sel-all').onclick = () => Admin.selectAll();
 $('#sel-tags').onclick = () => Tags.editFor([...Admin.sel.values()], () => { Admin.exitSelect(); B.load(B.path, false); });
 $('#sel-move').onclick = () => Admin.move([...Admin.sel.values()]);
-$('#sel-rename').onclick = () => { const [e] = Admin.sel.values(); if (e) Admin.rename(e); };
+$('#sel-rename').onclick = () => {
+  const list = [...Admin.sel.values()];
+  if (list.length === 1) Admin.rename(list[0]); else if (list.length > 1) Admin.renameMany(list);
+};
 $('#sel-delete').onclick = () => Admin.remove([...Admin.sel.values()]);
 document.addEventListener('keydown', (e) => {
   if (!Admin.selecting || e.target.matches('input, textarea')) return;
   if (e.key === 'Escape') { Admin.exitSelect(); e.preventDefault(); }
   else if (e.key === 'Delete' && Admin.sel.size) { Admin.remove([...Admin.sel.values()]); e.preventDefault(); }
-  else if (e.key === 'F2' && Admin.sel.size === 1) { Admin.rename([...Admin.sel.values()][0]); e.preventDefault(); }
+  else if (e.key === 'F2' && Admin.sel.size) { $('#sel-rename').click(); e.preventDefault(); }
   else if ((e.ctrlKey || e.metaKey) && e.key === 'a') { Admin.selectAll(); e.preventDefault(); }
 });
 
