@@ -809,15 +809,77 @@ async function itemsWithTag(tag) {
 }
 
 // ---------------------------------------------------------------- administração (gerenciar arquivos)
+// Senha do administrador: variável ADMIN_PASSWORD (tem prioridade) ou criada pelo próprio app,
+// guardada como hash scrypt em DATA_DIR/admin.json.
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || '';
+const ADMIN_FILE = path.join(DATA_DIR, 'admin.json');
+let adminStored; // { salt, hash } | null
+async function storedAdmin() {
+  if (adminStored === undefined) {
+    const j = await loadJSON(ADMIN_FILE, null);
+    adminStored = j && j.salt && j.hash ? j : null;
+  }
+  return adminStored;
+}
+async function adminEnabled() { return !!(ADMIN_PASSWORD || (await storedAdmin())); }
+const scrypt = (pw, salt) => new Promise((res, rej) => crypto.scrypt(String(pw), salt, 32, (e, k) => (e ? rej(e) : res(k))));
+async function checkPassword(pw) {
+  if (ADMIN_PASSWORD) {
+    const a = crypto.createHash('sha256').update(String(pw || '')).digest();
+    return crypto.timingSafeEqual(a, crypto.createHash('sha256').update(ADMIN_PASSWORD).digest());
+  }
+  const st = await storedAdmin(); if (!st) return false;
+  const k = await scrypt(pw || '', Buffer.from(st.salt, 'hex'));
+  return crypto.timingSafeEqual(k, Buffer.from(st.hash, 'hex'));
+}
+async function setStoredPassword(pw) {
+  pw = String(pw || '');
+  if (pw.length < 4) throw new HttpError(400, 'A senha precisa ter pelo menos 4 caracteres');
+  const salt = crypto.randomBytes(16);
+  adminStored = { salt: salt.toString('hex'), hash: (await scrypt(pw, salt)).toString('hex'), created: Date.now() };
+  await saveJSON(ADMIN_FILE, adminStored);
+  adminSecret = null; // trocar a senha encerra as outras sessões
+}
 let adminSecret = null;
 async function getAdminSecret() {
   if (adminSecret) return adminSecret;
   const f = path.join(DATA_DIR, 'admin.key');
   let salt = (await loadJSON(f, null)) || null;
   if (!salt) { salt = crypto.randomBytes(32).toString('hex'); await saveJSON(f, salt); }
-  adminSecret = crypto.createHash('sha256').update(`${salt}|${ADMIN_PASSWORD}`).digest();
+  const st = await storedAdmin();
+  adminSecret = crypto.createHash('sha256').update(`${salt}|${ADMIN_PASSWORD || (st ? st.hash : '')}`).digest();
   return adminSecret;
+}
+// pastas montadas como somente leitura (":ro" no docker-compose) — o app avisa no menu
+function readonlyMounts() {
+  try {
+    return fs.readFileSync('/proc/mounts', 'utf8').split('\n').map((l) => l.split(' '))
+      .filter((f) => f.length > 3 && (f[1] === ROOT || f[1].startsWith(ROOT + '/')) && f[3].split(',').includes('ro'))
+      .map((f) => relOf(f[1].replace(/\\040/g, ' ')) || '/');
+  } catch { return []; }
+}
+async function sessionCookie(res) {
+  const exp = String(Date.now() + 30 * 86400000);
+  const sig = crypto.createHmac('sha256', await getAdminSecret()).update(exp).digest('hex');
+  res.setHeader('Set-Cookie', `zv_admin=${exp}.${sig}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${30 * 86400}`);
+}
+async function adminSetup(req, res) {
+  // criar a senha pelo app: só enquanto nenhuma senha existir
+  if (req.method !== 'POST' || req.headers['x-zv'] !== '1') throw new HttpError(403, 'Requisição inválida');
+  if (await adminEnabled()) throw new HttpError(409, 'Já existe uma senha de administrador');
+  const { password } = await readBody(req);
+  await setStoredPassword(password);
+  await sessionCookie(res);
+  console.log('[admin] senha de administrador criada pelo app');
+  return { ok: true };
+}
+async function adminChangePassword(req) {
+  await requireAdmin(req);
+  if (ADMIN_PASSWORD) throw new HttpError(409, 'A senha está definida pela variável ADMIN_PASSWORD; altere-a nas configurações do app no ZimaOS');
+  const { current, password } = await readBody(req);
+  if (!(await checkPassword(current))) throw new HttpError(401, 'Senha atual incorreta');
+  await setStoredPassword(password);
+  return { ok: true };
 }
 function cookies(req) {
   const out = {};
@@ -825,7 +887,7 @@ function cookies(req) {
   return out;
 }
 async function isAdmin(req) {
-  if (!ADMIN_PASSWORD) return false;
+  if (!(await adminEnabled())) return false;
   const c = cookies(req).zv_admin; if (!c) return false;
   const [exp, sig] = c.split('.');
   if (!exp || !sig || !(+exp > Date.now())) return false;
@@ -844,29 +906,25 @@ function readBody(req, limit = 1024 * 1024) {
 async function requireAdmin(req) {
   if (req.method !== 'POST') throw new HttpError(405, 'Use POST');
   if (req.headers['x-zv'] !== '1') throw new HttpError(403, 'Requisição inválida');
-  if (!ADMIN_PASSWORD) throw new HttpError(403, 'Modo administrador desativado: defina ADMIN_PASSWORD no servidor');
+  if (!(await adminEnabled())) throw new HttpError(403, 'Crie a senha de administrador primeiro (menu ⋮)');
   if (!(await isAdmin(req))) throw new HttpError(401, 'Entre no modo administrador');
 }
 const loginFails = new Map(); // ip -> { n, until }
 async function adminLogin(req, res) {
   if (req.method !== 'POST' || req.headers['x-zv'] !== '1') throw new HttpError(403, 'Requisição inválida');
-  if (!ADMIN_PASSWORD) throw new HttpError(403, 'Modo administrador desativado: defina ADMIN_PASSWORD no servidor');
+  if (!(await adminEnabled())) throw new HttpError(403, 'Crie a senha de administrador primeiro');
   const ip = req.socket.remoteAddress || '?';
   const f = loginFails.get(ip);
   if (f && f.until > Date.now()) throw new HttpError(429, `Muitas tentativas. Tente de novo em ${Math.ceil((f.until - Date.now()) / 60000)} min`);
   const { password } = await readBody(req);
-  const a = crypto.createHash('sha256').update(String(password || '')).digest();
-  const b = crypto.createHash('sha256').update(ADMIN_PASSWORD).digest();
-  if (!crypto.timingSafeEqual(a, b)) {
+  if (!(await checkPassword(password))) {
     const n = (f ? f.n : 0) + 1;
     loginFails.set(ip, { n, until: n >= 5 ? Date.now() + 10 * 60000 : 0 });
     await new Promise((r) => setTimeout(r, 800));
     throw new HttpError(401, 'Senha incorreta');
   }
   loginFails.delete(ip);
-  const exp = String(Date.now() + 30 * 86400000);
-  const sig = crypto.createHmac('sha256', await getAdminSecret()).update(exp).digest('hex');
-  res.setHeader('Set-Cookie', `zv_admin=${exp}.${sig}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${30 * 86400}`);
+  await sessionCookie(res);
   return { ok: true };
 }
 
@@ -878,7 +936,7 @@ function validName(n) {
 function fsError(e) {
   if (e instanceof HttpError) return e;
   if (e.code === 'EROFS' || e.code === 'EACCES' || e.code === 'EPERM') {
-    return new HttpError(403, 'Sem permissão de escrita: a pasta está montada como somente leitura (veja "Gerenciar arquivos" no README)');
+    return new HttpError(403, 'Pasta somente leitura: nas configurações do app no ZimaOS, troque o volume para leitura e gravação (tire o ":ro")');
   }
   if (e.code === 'EEXIST' || e.code === 'ENOTEMPTY') return new HttpError(409, 'Já existe um item com esse nome');
   if (e.code === 'ENOENT') return new HttpError(404, 'Item não encontrado');
@@ -899,10 +957,14 @@ async function freeName(dir, name) {
   return cand;
 }
 async function moveFs(from, to) {
+  // a origem precisa aceitar gravação (senão sobraria uma cópia no destino)
+  await fsp.access(path.dirname(from), fs.constants.W_OK);
   try { await fsp.rename(from, to); }
   catch (e) {
     if (e.code !== 'EXDEV') throw e;
-    await fsp.cp(from, to, { recursive: true, errorOnExist: true, force: false, preserveTimestamps: true });
+    // discos/volumes diferentes: copia e só então apaga a origem; se a cópia falhar, desfaz
+    try { await fsp.cp(from, to, { recursive: true, errorOnExist: true, force: false, preserveTimestamps: true }); }
+    catch (err) { await fsp.rm(to, { recursive: true, force: true }).catch(() => {}); throw err; }
     await fsp.rm(from, { recursive: true, force: true });
   }
 }
@@ -934,8 +996,24 @@ async function forget(rels) {
 // lixeira: fica no mesmo disco do item (mover é instantâneo), registrada em trash.json
 const TRASH_FILE = path.join(DATA_DIR, 'trash.json');
 const TRASH_DIR = '.zima-lixeira';
+// Pasta raiz da montagem onde o item está (a lixeira fica nela: mover dentro da mesma montagem é
+// instantâneo). Usa a tabela de montagens — volumes do Docker do mesmo disco ainda são montagens
+// diferentes e não permitem mover entre si (EXDEV).
+function mountPoints() {
+  try {
+    return fs.readFileSync('/proc/mounts', 'utf8').split('\n').map((l) => l.split(' ')[1]).filter(Boolean)
+      .map((m) => m.replace(/\\040/g, ' ').replace(/\\011/g, '\t').replace(/\\134/g, '\\'));
+  } catch { return null; }
+}
 async function mountRoot(abs) {
-  // sobe a partir da pasta do item enquanto continuar no mesmo disco (st.dev), sem sair de ROOT
+  const mps = mountPoints();
+  if (mps) {
+    let best = null;
+    for (const m of mps) if ((abs === m || abs.startsWith(m === '/' ? '/' : m + '/')) && (!best || m.length > best.length)) best = m;
+    if (best && (best === ROOT || best.startsWith(ROOT + '/'))) return best;
+    return ROOT; // item no próprio sistema de arquivos do contêiner, abaixo de ROOT
+  }
+  // sem /proc/mounts: sobe enquanto o dispositivo (st.dev) for o mesmo
   const dev = (await fsp.stat(abs)).dev;
   let cur = path.dirname(abs);
   while (cur !== ROOT) {
@@ -992,6 +1070,7 @@ async function fsAction(action, body) {
           try {
             const abs = editablePath(rel);
             const st = await fsp.stat(abs);
+            await fsp.access(path.dirname(abs), fs.constants.W_OK); // pasta somente leitura → erro claro (EROFS)
             const tdir = path.join(await mountRoot(abs), TRASH_DIR);
             await fsp.mkdir(tdir, { recursive: true });
             const id = `${Date.now().toString(36)}${crypto.randomBytes(3).toString('hex')}`;
@@ -1130,7 +1209,11 @@ const server = http.createServer(async (req, res) => {
       case '/api/admin/logout':
         res.setHeader('Set-Cookie', 'zv_admin=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0');
         return sendJSON(res, { ok: true });
-      case '/api/admin/status': return sendJSON(res, { enabled: !!ADMIN_PASSWORD, logged: await isAdmin(req) });
+      case '/api/admin/status': return sendJSON(res, {
+        enabled: await adminEnabled(), logged: await isAdmin(req), fromEnv: !!ADMIN_PASSWORD, readonly: readonlyMounts(),
+      });
+      case '/api/admin/setup': return sendJSON(res, await adminSetup(req, res));
+      case '/api/admin/password': return sendJSON(res, await adminChangePassword(req));
       case '/api/fs': { await requireAdmin(req); return sendJSON(res, await fsAction(q.get('action'), await readBody(req))); }
       case '/api/tags': {
         if (req.method === 'POST') {
@@ -1159,7 +1242,8 @@ server.listen(PORT, () => {
   console.log(`Zima Video em http://0.0.0.0:${PORT}  (mídia: ${ROOT}, cache: ${CACHE}, hwaccel: ${HWACCEL})`);
   getIndex().catch((e) => console.warn('[busca] falha ao indexar:', e.message));
   loadTags().catch(() => {});
-  if (ADMIN_PASSWORD) console.log('Modo administrador: ativado'); else console.log('Modo administrador: desativado (defina ADMIN_PASSWORD para gerenciar arquivos)');
+  adminEnabled().then((on) => console.log(on ? 'Modo administrador: ativado' : 'Modo administrador: sem senha (crie pelo menu ⋮ do app)'));
+  const ro = readonlyMounts(); if (ro.length) console.log('Somente leitura:', ro.join(', '));
 });
 
 process.on('SIGTERM', () => {

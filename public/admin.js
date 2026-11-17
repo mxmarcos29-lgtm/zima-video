@@ -174,17 +174,17 @@ const Tags = {
 const Admin = {
   enabled: false, logged: false, selecting: false, sel: new Map(),
   async status() {
-    try { const r = await api('admin/status'); this.enabled = r.enabled; this.logged = r.logged; } catch { /* ignore */ }
+    try {
+      const r = await api('admin/status');
+      this.enabled = r.enabled; this.logged = r.logged; this.fromEnv = r.fromEnv; this.readonly = r.readonly || [];
+    } catch { /* ignore */ }
   },
 
   // ---------- login
   login(then) {
     Sheet.open((b) => {
       Sheet.header(b, 'Modo administrador');
-      if (!this.enabled) {
-        b.appendChild(el('div', 'sheet-note', 'O modo administrador está desativado no servidor. Para ativar, defina a variável <b>ADMIN_PASSWORD</b> no app (docker-compose) e monte as pastas sem “:ro”. Veja “Gerenciar arquivos” no README.'));
-        return;
-      }
+      if (!this.enabled) { this.setup(then); return; }
       const f = el('form', 'login-form');
       f.innerHTML = '<input type="password" autocomplete="current-password" placeholder="Senha de administrador" required><button class="btn primary">Entrar</button><div class="login-err"></div>';
       f.onsubmit = async (ev) => {
@@ -192,7 +192,7 @@ const Admin = {
         const err = $('.login-err', f); err.textContent = '';
         try {
           await apiPost('admin/login', null, { password: $('input', f).value });
-          this.logged = true; Sheet.close(); toast('Modo administrador ativado');
+          this.logged = true; Sheet.close(); toast('Modo administrador ativado'); setTimeout(() => this.readonlyWarning(), 3200);
           B.render(); if (then) whenHistoryIdle(then);
         } catch (e) { err.textContent = e.message; }
       };
@@ -201,6 +201,58 @@ const Admin = {
       setTimeout(() => $('input', f).focus(), 60);
     });
   },
+  // primeira vez: criar a senha pelo próprio app (só funciona enquanto não existir senha)
+  setup(then) {
+    Sheet.open((b) => {
+      Sheet.header(b, 'Criar senha de administrador');
+      b.appendChild(el('div', 'sheet-note', 'Ainda não existe senha. Crie uma agora — ela será pedida para criar pastas, renomear, mover, excluir e editar tags. Depois de criada, só quem souber a senha pode trocá-la.'));
+      const f = el('form', 'login-form');
+      f.innerHTML = '<input type="password" autocomplete="new-password" placeholder="Nova senha (mín. 4 caracteres)" minlength="4" required>' +
+        '<input type="password" autocomplete="new-password" placeholder="Repita a senha" minlength="4" required><button class="btn primary">Criar senha</button><div class="login-err"></div>';
+      f.onsubmit = async (ev) => {
+        ev.preventDefault();
+        const [a, c] = [...f.querySelectorAll('input')].map((i) => i.value);
+        const err = $('.login-err', f);
+        if (a !== c) { err.textContent = 'As senhas não conferem'; return; }
+        try {
+          await apiPost('admin/setup', null, { password: a });
+          this.enabled = true; this.logged = true; Sheet.close();
+          toast('Senha criada · modo administrador ativado');
+          B.render(); this.readonlyWarning();
+          if (then) whenHistoryIdle(then);
+        } catch (e) { err.textContent = e.message; }
+      };
+      b.appendChild(f);
+      this.readonlyNote(b);
+      setTimeout(() => $('input', f).focus(), 60);
+    });
+  },
+  changePassword() {
+    Sheet.open((b) => {
+      Sheet.header(b, 'Trocar senha de administrador');
+      const f = el('form', 'login-form');
+      f.innerHTML = '<input type="password" autocomplete="current-password" placeholder="Senha atual" required>' +
+        '<input type="password" autocomplete="new-password" placeholder="Nova senha (mín. 4 caracteres)" minlength="4" required>' +
+        '<input type="password" autocomplete="new-password" placeholder="Repita a nova senha" minlength="4" required><button class="btn primary">Trocar</button><div class="login-err"></div>';
+      f.onsubmit = async (ev) => {
+        ev.preventDefault();
+        const [cur, a, c] = [...f.querySelectorAll('input')].map((i) => i.value);
+        const err = $('.login-err', f);
+        if (a !== c) { err.textContent = 'As senhas não conferem'; return; }
+        try { await apiPost('admin/password', null, { current: cur, password: a }); Sheet.close(); toast('Senha alterada'); }
+        catch (e) { err.textContent = e.message; }
+      };
+      b.appendChild(f);
+      setTimeout(() => $('input', f).focus(), 60);
+    });
+  },
+  // pastas com ":ro" no docker-compose não aceitam alterações: explica como liberar
+  readonlyNote(b) {
+    if (!this.readonly || !this.readonly.length) return;
+    b.appendChild(el('div', 'sheet-note ro-warn', `<b>Atenção:</b> ${this.readonly.map((p) => '“' + esc(p) + '”').join(', ')} ${this.readonly.length > 1 ? 'estão montadas' : 'está montada'} como <b>somente leitura</b>, então mover, renomear e excluir não vão funcionar ali. ` +
+      'Para liberar: no ZimaOS, abra as configurações do app Zima Video e, em <b>Volumes</b>, tire a opção de somente leitura. Se não houver essa opção, reinstale o app com o docker-compose novo (que já vem sem “:ro”) — favoritos e tags são mantidos.'));
+  },
+  readonlyWarning() { if (this.readonly && this.readonly.length) toast('Algumas pastas estão somente leitura — veja o menu ⋮', null, null, 5000); },
   async logout() {
     try { await apiPost('admin/logout'); } catch { /* ignore */ }
     this.logged = false; this.exitSelect(); B.render(); toast('Saiu do modo administrador');
@@ -375,10 +427,15 @@ const Admin = {
   // ---------- linhas nos menus
   menuRows(b) {
     Sheet.header(b, 'Administrador');
-    if (!this.logged) { Sheet.row(b, { ico: 'lock', label: 'Entrar no modo administrador', onClick: () => this.login() }); return; }
+    if (!this.logged) {
+      Sheet.row(b, { ico: 'lock', label: this.enabled ? 'Entrar no modo administrador' : 'Criar senha de administrador', onClick: () => this.login() });
+      return;
+    }
+    this.readonlyNote(b);
     Sheet.row(b, { ico: 'check', label: 'Selecionar itens', onClick: () => { Sheet.close(); this.selecting = true; document.body.classList.add('selecting'); this.updateBar(); } });
     if (!B.tagView) Sheet.row(b, { ico: 'add', label: 'Nova pasta aqui', onClick: () => this.newFolder() });
     Sheet.row(b, { ico: 'delete', label: 'Lixeira', onClick: () => this.trash() });
+    if (!this.fromEnv) Sheet.row(b, { ico: 'lock', label: 'Trocar senha de administrador', onClick: () => this.changePassword() });
     Sheet.row(b, { ico: 'lock', label: 'Sair do modo administrador', onClick: () => { Sheet.close(); this.logout(); } });
   },
   itemRows(b, e) {

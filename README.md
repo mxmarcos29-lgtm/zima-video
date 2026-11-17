@@ -55,8 +55,8 @@ Se a reprodução direta falhar, o player tenta o próximo modo sozinho. No menu
 
 ## Gerenciar arquivos (modo administrador) e tags
 
-1. Defina `ADMIN_PASSWORD` no app (ZimaOS → app Zima Video → configurações → variáveis) e confira que as pastas **não** estão com `:ro` nos volumes.
-2. No app: menu ⋮ → **Entrar no modo administrador**.
+1. No app: menu ⋮ → **Criar senha de administrador** (só aparece enquanto não existe senha; depois vira **Entrar no modo administrador**). Para trocar: menu ⋮ → *Trocar senha de administrador*. Alternativa: definir a variável `ADMIN_PASSWORD` no app (tem prioridade).
+2. As pastas precisam estar graváveis (sem `:ro` nos volumes). Se estiverem somente leitura, o próprio menu avisa quais e como liberar.
 3. Segure um item (ou ⋮ → *Selecionar itens*) para selecionar vários. A barra de baixo tem **Tags**, **Mover**, **Renomear** e **Excluir**. No PC: `Ctrl+A`, `F2` renomeia, `Delete` exclui, `Esc` sai.
 4. Pelo menu ⋮ de cada item também dá para renomear, mover, excluir e editar tags; no menu do topo, **Nova pasta aqui** e **Lixeira**.
 
@@ -121,7 +121,7 @@ Se a GPU falhar com algum arquivo, o servidor volta automaticamente para convers
 | `PREVIEW_CONCURRENCY` | `1` | Prévias geradas em paralelo |
 | `SEARCH_INDEX_TTL` | `600` | Segundos até reindexar a pesquisa |
 | `DATA_DIR` | `CACHE_DIR` | Onde ficam `favorites.json`, `tags.json` e `trash.json` |
-| `ADMIN_PASSWORD` | vazio | Senha do modo administrador; vazio = desativado |
+| `ADMIN_PASSWORD` | vazio | Senha do modo administrador (opcional: dá para criar a senha pelo app) |
 | `SHOW_HIDDEN` | `0` | `1` mostra arquivos ocultos (`.x`, `@eaDir`…) |
 
 ## Dicas

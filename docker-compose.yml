@@ -15,12 +15,12 @@ services:
       # Usuário/senha opcionais (recomendado se acessar pela internet)
       AUTH_USER: ""
       AUTH_PASS: ""
-      # Senha do modo administrador (criar pastas, renomear, mover, excluir, tags).
-      # Vazio = desativado: nada pode ser alterado pelo app.
+      # Senha do modo administrador (opcional). Vazio = crie a senha pelo próprio app
+      # (menu ⋮ → Criar senha de administrador).
       ADMIN_PASSWORD: ""
     volumes:
       # Pastas que aparecem no app. Graváveis para o modo administrador funcionar
-      # (sem ADMIN_PASSWORD nada é alterado). Para somente leitura, acrescente :ro no fim.
+      # (nada é alterado sem a senha de administrador). Para somente leitura, acrescente :ro no fim.
       - /DATA:/media/DATA
       - /media:/media/Discos
       # Cache de miniaturas, legendas e conversões
@@ -39,8 +39,8 @@ services:
             pt_br: "Usuário de login (opcional)"
         - container: ADMIN_PASSWORD
           description:
-            en_us: "Admin password (file management and tags). Empty = disabled"
-            pt_br: "Senha do administrador (gerenciar arquivos e tags). Vazio = desativado"
+            en_us: "Admin password (optional, can also be created in the app)"
+            pt_br: "Senha do administrador (opcional, também pode ser criada no app)"
         - container: AUTH_PASS
           description:
             en_us: "Optional login password"

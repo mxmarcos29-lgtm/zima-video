@@ -684,3 +684,8 @@ body.selecting .player.mini { bottom: calc(80px + var(--safe-b)); }
 
 
 body.selecting .toast { bottom: calc(84px + var(--safe-b)); }
+
+.ro-warn { background: color-mix(in srgb, #ffb020 14%, transparent); border-left: 3px solid #ffb020; margin: 4px 16px 8px; padding: 10px 12px; border-radius: 8px; color: var(--text); }
+.login-form input + input { margin-top: 0; }
+.login-form input { flex-basis: 100%; }
+.login-form .btn { margin-left: auto; }
