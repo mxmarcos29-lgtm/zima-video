@@ -54,10 +54,17 @@ Se a reprodução direta falhar, o player tenta o próximo modo sozinho. No menu
 - **Modo teatro** (botão ▭ ou tecla `T`): o vídeo ocupa toda a janela, a lista vai para baixo.
 - **Tela dividida:** até 4 vídeos ao mesmo tempo. Abra pelo menu ⋮ de um vídeo → *Abrir na tela dividida*, pelo ⚙ do player ou pelo botão **+**. Clique num vídeo para ouvir o som dele, duplo clique amplia, teclas `1`–`4` selecionam.
 
+## Visualizações
+
+- Cada vídeo conta uma visualização depois de ~30s assistidos (ou 40% em vídeos curtos); guardado no servidor (`views.json`), igual em todos os aparelhos. A lista mostra "3 visualizações · visto ontem".
+- Menu ⋮ → **Ordenar por**: mais vistos, menos vistos, vistos recentemente, vistos há mais tempo/nunca.
+- Menu ⋮ → **Mostrar**: todos, nunca vistos, já vistos, em andamento, vistos nos últimos 7 dias, não vistos há mais de 30 dias.
+
 ## Desempenho
 
 - **Pré-geração:** depois de iniciar, o servidor prepara miniaturas, prévias em vídeo e storyboards de toda a biblioteca em segundo plano (nice 19, pausa durante reprodução/navegação). O andamento aparece no menu ⋮. Primeira passada pode levar um tempo em bibliotecas grandes; arquivos novos são pegos a cada 30 min.
 - **Storyboard:** a prévia ao arrastar/passar o mouse na barra de progresso vem de folhas de miniaturas do vídeo todo — instantânea.
+- **Navegação:** pastas já visitadas abrem na hora (atualizam por trás); ao trocar de pasta, pedidos pendentes são cancelados; miniaturas que ainda estão sendo geradas não seguram conexões (o app tenta de novo e as visíveis passam na frente da fila).
 - **Cache:** miniaturas, prévias e storyboards são guardados no navegador para sempre (a URL muda se o arquivo mudar); informações dos vídeos ficam salvas em disco; app e listas vão comprimidos (gzip).
 
 ## Gerenciar arquivos (modo administrador) e tags

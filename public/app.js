@@ -36,8 +36,8 @@ function fmtDate(ms) {
   if (days < 7) return `há ${days} dias`;
   return d.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short', year: d.getFullYear() === now.getFullYear() ? undefined : 'numeric' });
 }
-async function api(path, params = {}) {
-  const r = await fetch(`/api/${path}?${qs(params)}`);
+async function api(path, params = {}, opts = {}) {
+  const r = await fetch(`/api/${path}?${qs(params)}`, { signal: opts.signal });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.error || `Erro ${r.status}`);
   return j;
@@ -234,6 +234,36 @@ $('#side-brand').onclick = () => B.load('');
 $('#search-pill').onclick = () => Search.show();
 
 // ===================================================================== navegador de arquivos
+// ---------- visualizações (contadas no servidor) e filtros por elas
+const vN = (e) => (e.views && e.views.n) || 0;
+const vLast = (e) => (e.views && e.views.last) || 0;
+const seenHere = (e) => { const pr = progress[e.path] || (e.name && B.path != null ? progress[(B.path ? B.path + '/' : '') + e.name] : null); return pr && (pr.w || pr.t > 5); };
+const VIEW_FILTERS = {
+  all: ['Todos', () => true],
+  unseen: ['Nunca vistos', (e) => !vN(e) && !seenHere(e)],
+  seen: ['Já vistos', (e) => vN(e) > 0 || seenHere(e)],
+  progress: ['Em andamento', (e) => { const pr = progress[e.path || ((B.path ? B.path + '/' : '') + e.name)]; return !!(pr && pr.t > 5 && !pr.w); }],
+  week: ['Vistos nos últimos 7 dias', (e) => vLast(e) > Date.now() - 7 * 86400000],
+  month: ['Não vistos há mais de 30 dias', (e) => vN(e) > 0 && vLast(e) < Date.now() - 30 * 86400000],
+};
+function viewFilter(list) {
+  const f = VIEW_FILTERS[prefs.viewFilter];
+  if (!f || prefs.viewFilter === 'all') return list;
+  // pastas continuam visíveis para dar para navegar; o filtro vale para vídeos e áudios
+  return list.filter((e) => e.type === 'dir' || ((e.type === 'video' || e.type === 'audio') && f[1](e)));
+}
+function setViewFilter(k) { prefs.viewFilter = k; savePrefs(); B.render(); }
+function renderViewFilterBar() {
+  const bar = $('#vf-bar'); const k = prefs.viewFilter || 'all';
+  bar.classList.toggle('hidden', k === 'all');
+  if (k === 'all') return;
+  bar.innerHTML = `<span class="tf-label">${icon('autoplay')}Mostrando</span>`;
+  const chip = el('button', 'tag tag-btn on vf-chip', `${esc(VIEW_FILTERS[k][0])} ✕`);
+  chip.style.setProperty('--c', '#7c5cff'); chip.title = 'Mostrar todos';
+  chip.onclick = () => setViewFilter('all');
+  bar.appendChild(chip);
+}
+
 const B = {
   path: '', entries: [], loadSeq: 0,
 
@@ -246,24 +276,52 @@ const B = {
     this.path = p;
     this.renderChrome();
     const list = $('#list');
-    const loadT = setTimeout(() => $('#loading').classList.remove('hidden'), 200);
-    $('#empty').classList.add('hidden');
+    // cancela o pedido da pasta anterior e as miniaturas que ainda estavam baixando (liberam conexões)
+    if (this.ctrl) this.ctrl.abort();
+    const ctrl = this.ctrl = new AbortController();
+    cancelPendingImages();
+    // pasta já visitada: mostra na hora o que estava guardado e atualiza por trás
+    const cached = this.cache.get(p);
+    if (cached) {
+      this.entries = cached.entries; this.loaded = true; this.render();
+      window.scrollTo(0, store.get('scroll:' + p, 0));
+    }
+    const loadT = cached ? null : setTimeout(() => $('#loading').classList.remove('hidden'), 200);
+    if (!cached) $('#empty').classList.add('hidden');
     try {
-      const r = await api('list', { path: p });
+      const r = await api('list', { path: p }, { signal: ctrl.signal });
       if (seq !== this.loadSeq) return;
+      const sig = JSON.stringify(r.entries);
+      this.remember(p, r.entries, sig);
+      if (cached && cached.sig === sig) return; // nada mudou: não redesenha
       this.entries = r.entries;
       this.loaded = true;
       this.render();
-      window.scrollTo(0, store.get('scroll:' + p, 0));
+      if (!cached) window.scrollTo(0, store.get('scroll:' + p, 0));
     } catch (e) {
-      if (seq !== this.loadSeq) return;
+      if (seq !== this.loadSeq || e.name === 'AbortError') return;
+      if (cached) return; // sem rede: fica com o que estava guardado
       list.innerHTML = '';
       $('#empty').innerHTML = `${icon('info')}${esc(e.message)}<br><br><button class="btn" onclick="B.load('')">Ir para o início</button>`;
       $('#empty').classList.remove('hidden');
     } finally {
-      clearTimeout(loadT);
+      if (loadT) clearTimeout(loadT);
       if (seq === this.loadSeq) $('#loading').classList.add('hidden');
     }
+  },
+
+  cache: new Map(),
+  remember(p, entries, sig = JSON.stringify(entries)) {
+    this.cache.delete(p); this.cache.set(p, { entries, sig, at: Date.now() });
+    if (this.cache.size > 40) this.cache.delete(this.cache.keys().next().value);
+  },
+  // passar o mouse numa pasta já começa a carregar o conteúdo dela
+  prefetched: new Map(),
+  prefetch(p) {
+    const t = this.prefetched.get(p) || 0;
+    if (Date.now() - t < 15000) return;
+    this.prefetched.set(p, Date.now());
+    api('list', { path: p }).then((r) => { if (!this.cache.has(p) || this.cache.get(p).sig !== JSON.stringify(r.entries)) this.remember(p, r.entries); }).catch(() => {});
   },
 
   renderChrome() {
@@ -294,16 +352,21 @@ const B = {
       'name-desc': (a, b) => collator.compare(b.name, a.name),
       date: (a, b) => b.mtime - a.mtime,
       size: (a, b) => b.size - a.size,
+      views: (a, b) => vN(b) - vN(a),
+      'views-asc': (a, b) => vN(a) - vN(b),
+      last: (a, b) => vLast(b) - vLast(a),
+      'last-asc': (a, b) => vLast(a) - vLast(b),
     }[prefs.sort] || ((a, b) => collator.compare(a.name, b.name));
-    return entries.slice().sort((a, b) => ((b.type === 'dir') - (a.type === 'dir')) || by(a, b));
+    return entries.slice().sort((a, b) => ((b.type === 'dir') - (a.type === 'dir')) || by(a, b) || collator.compare(a.name, b.name));
   },
 
   visible() {
     const media = new Set(['dir', 'video', 'audio', 'image']);
-    return this.sorted(Tags.applyFilter(this.entries.filter((e) => !prefs.mediaOnly || media.has(e.type))));
+    return this.sorted(viewFilter(Tags.applyFilter(this.entries.filter((e) => !prefs.mediaOnly || media.has(e.type)))));
   },
 
   render() {
+    renderViewFilterBar();
     if (this.tagView) return Tags.renderView();
     Tags.renderFilterBar(); Tags.renderHome();
     const list = $('#list');
@@ -315,7 +378,9 @@ const B = {
     list.appendChild(frag);
     if (!items.length) {
       const hidden = this.entries.length - items.length;
-      $('#empty').innerHTML = `${icon('folder')}Pasta vazia` + (hidden ? `<br><small>${hidden} arquivo(s) oculto(s) pelo filtro "Somente mídia"</small>` : '');
+      const vf = prefs.viewFilter && prefs.viewFilter !== 'all' ? VIEW_FILTERS[prefs.viewFilter][0] : null;
+      $('#empty').innerHTML = vf && this.entries.length ? `${icon('autoplay')}Nada em “${esc(vf)}” nesta pasta<br><br><button class="btn" onclick="setViewFilter('all')">Mostrar todos</button>`
+        : `${icon('folder')}Pasta vazia` + (hidden ? `<br><small>${hidden} arquivo(s) oculto(s) pelo filtro "Somente mídia"</small>` : '');
       $('#empty').classList.remove('hidden');
     }
     $('#favorites .list-h') && $('#favorites .list-h').remove();
@@ -371,10 +436,35 @@ const B = {
   },
 };
 
-function loadThumb(img, p, v) {
-  img.onload = () => img.classList.add('ok');
+// miniatura: o servidor devolve uma imagem 1×1 quando ainda está gerando (para não segurar a conexão);
+// nesse caso tenta de novo com intervalo crescente, enquanto a miniatura ainda estiver na tela
+function loadThumb(img, p, v, w) {
+  const base = thumbUrl(p, null, w, v); let n = 0;
+  img.onload = () => {
+    if (img.naturalWidth <= 1) {
+      if (++n > 25) { img.remove(); return; }
+      clearTimeout(img._retry);
+      // só repete o pedido se a miniatura estiver visível (o servidor põe esse pedido na frente da fila);
+      // fora da tela, espera mais e confere de novo
+      const retry = () => {
+        if (!img.isConnected) return;
+        const r = img.getBoundingClientRect();
+        if (r.bottom < -100 || r.top > innerHeight + 100 || !r.width) { img._retry = setTimeout(retry, 2500); return; }
+        img.src = `${base}&r=${n}`;
+      };
+      // as do topo pedem por último: o último pedido vai para a frente da fila, então o topo fica pronto antes
+      const top = img.getBoundingClientRect().top;
+      img._retry = setTimeout(retry, Math.min(4000, 500 * n) + Math.max(0, Math.min(400, 400 - (top / innerHeight) * 400)));
+      return;
+    }
+    img.classList.add('ok');
+  };
   img.onerror = () => img.remove();
-  img.src = thumbUrl(p, null, null, v);
+  img.src = base;
+}
+// ao trocar de pasta: interrompe miniaturas que ainda estavam baixando ou esperando nova tentativa
+function cancelPendingImages() {
+  document.querySelectorAll('#browser img:not(.ok)').forEach((img) => { clearTimeout(img._retry); img.onload = img.onerror = null; img.removeAttribute('src'); });
 }
 
 function typeIcon(t) { return { dir: 'folder', video: 'video', audio: 'audio', image: 'image', subtitle: 'subtitle' }[t] || 'file'; }
@@ -393,8 +483,10 @@ function renderItem(e, { showPath = false, highlight = null } = {}) {
   const meta = [];
   if (e.type !== 'dir' && e.size) meta.push(fmtSize(e.size));
   if (e.mtime) meta.push(fmtDate(e.mtime));
-  if (pr && pr.w) meta.push('assistido');
-  else if (pr && pr.t > 5) meta.push(`parou em ${fmtTime(pr.t)}`);
+  if (vN(e)) meta.push(`${vN(e)} ${vN(e) > 1 ? 'visualizações' : 'visualização'}`);
+  if (vLast(e)) meta.push(`visto ${fmtDate(vLast(e))}`);
+  else if (pr && pr.w) meta.push('assistido');
+  if (pr && !pr.w && pr.t > 5) meta.push(`parou em ${fmtTime(pr.t)}`);
   let name = esc(e.type === 'video' ? stripExt(e.name) : e.name);
   if (highlight) name = highlightTerms(name, highlight);
   if (Fav.has(e.path)) name = `<svg class="fav-star"><use href="#i-star"/></svg>` + name;
@@ -405,7 +497,7 @@ function renderItem(e, { showPath = false, highlight = null } = {}) {
     `<button class="icon-btn item-more" aria-label="Mais opções">${icon('more')}</button>`;
   const img = $('img', li);
   if (img) {
-    if (e.type === 'image') { img.onload = () => img.classList.add('ok'); img.onerror = () => img.remove(); img.src = thumbUrl(e.path, null, 240, e.mtime); }
+    if (e.type === 'image') loadThumb(img, e.path, e.mtime, 240);
     else loadThumb(img, e.path, e.mtime);
   }
   li.onclick = (ev) => {
@@ -508,9 +600,12 @@ function browserMenu() {
       const fav = Fav.has(B.path);
       Sheet.row(b, { ico: fav ? 'star' : 'star-o', label: fav ? 'Remover pasta dos favoritos' : 'Favoritar esta pasta', onClick: () => { Sheet.close(); Fav.toggle(B.path); } });
     }
-    const sorts = [['name', 'Nome (A–Z)'], ['name-desc', 'Nome (Z–A)'], ['date', 'Mais recentes'], ['size', 'Maior tamanho']];
+    const sorts = [['name', 'Nome (A–Z)'], ['name-desc', 'Nome (Z–A)'], ['date', 'Mais recentes'], ['size', 'Maior tamanho'],
+      ['views', 'Mais vistos'], ['views-asc', 'Menos vistos'], ['last', 'Vistos recentemente'], ['last-asc', 'Vistos há mais tempo / nunca']];
     Sheet.header(b, 'Ordenar por');
     for (const [k, label] of sorts) Sheet.row(b, { label, sel: prefs.sort === k, onClick: () => { prefs.sort = k; savePrefs(); Sheet.close(); B.render(); } });
+    Sheet.header(b, 'Mostrar');
+    for (const [k, [label]] of Object.entries(VIEW_FILTERS)) Sheet.row(b, { label, sel: (prefs.viewFilter || 'all') === k, onClick: () => { Sheet.close(); setViewFilter(k); } });
     Sheet.header(b, 'Exibição');
     Sheet.row(b, { ico: 'video', label: 'Somente mídia e pastas', toggle: true, on: prefs.mediaOnly, onClick: (ev) => { prefs.mediaOnly = !prefs.mediaOnly; savePrefs(); ev.currentTarget.classList.toggle('on', prefs.mediaOnly); B.render(); } });
     Sheet.row(b, { ico: 'autoplay', label: 'Prévia em vídeo nas miniaturas', toggle: true, on: prefs.previews, onClick: (ev) => { prefs.previews = !prefs.previews; savePrefs(); ev.currentTarget.classList.toggle('on', prefs.previews); if (!prefs.previews) Preview.stop(); else Preview.refresh(); } });
@@ -784,6 +879,11 @@ document.addEventListener('pointerover', (e) => {
   clearTimeout(Preview.hoverTimer);
   Preview.hoverTimer = setTimeout(() => Preview.start(t), 350);
 });
+document.addEventListener('pointerover', (e) => {
+  if (e.pointerType !== 'mouse') return;
+  const li = e.target.closest && e.target.closest('.item.dir');
+  if (li && li.dataset.path) B.prefetch(li.dataset.path);
+});
 document.addEventListener('pointerout', (e) => {
   if (e.pointerType !== 'mouse') return;
   const t = e.target.closest && e.target.closest('.thumb[data-pv]');
@@ -904,6 +1004,7 @@ const P = {
     if (siblings) this.siblings = siblings;
     else if (!this.siblings.some((s) => s.path === item.path)) { this.siblings = []; this.loadSiblings(item); }
     this.item = item;
+    this.watched = 0; this.viewCounted = false; this.lastCT = null;
     this.info = null; this.cues = null; this.subSel = null; this.triedModes = [];
     $('#subs').innerHTML = '';
     clearPreview($('#seek-img')); clearPreview($('#scrub-hint img'));
@@ -935,7 +1036,7 @@ const P = {
     $('#audio-art').classList.toggle('hidden', !!info.video);
     if (!info.video) {
       const art = $('#audio-art'); art.innerHTML = icon('audio');
-      const img = new Image(); img.onload = () => { art.innerHTML = ''; art.appendChild(img); }; img.src = thumbUrl(item.path, null, 640, item.mtime);
+      const img = new Image(); img.onload = () => { if (img.naturalWidth > 1) { art.innerHTML = ''; art.appendChild(img); } }; img.src = thumbUrl(item.path, null, 640, item.mtime);
     }
     // faixa de áudio preferida
     this.audio = 0;
@@ -1261,12 +1362,35 @@ const P = {
     b.classList.toggle('on', on);
     b.innerHTML = `${icon(on ? 'star' : 'star-o')}${on ? 'Favorito' : 'Favoritar'}`;
   },
+  // visualização: conta depois de 30s realmente assistidos (ou 40% em vídeos curtos), uma vez por abertura
+  trackView() {
+    const ct = video.currentTime;
+    if (!video.paused && this.lastCT != null) { const d = ct - this.lastCT; if (d > 0 && d < 2) this.watched += d; }
+    this.lastCT = ct;
+    if (this.viewCounted || !this.item || !this.info) return;
+    const dur = this.duration() || 0;
+    if (this.watched >= Math.max(3, Math.min(30, dur * 0.4))) { this.viewCounted = true; this.countView(); }
+  },
+  async countView() {
+    const item = this.item;
+    try {
+      const r = await fetch(`/api/views?${qs({ path: item.path })}`, { method: 'POST', headers: { 'X-ZV': '1' } });
+      const j = await r.json(); if (!r.ok || !j.views) return;
+      const upd = (e) => { if (e && (e.path === item.path || (B.path != null && (B.path ? B.path + '/' : '') + e.name === item.path))) e.views = j.views; };
+      upd(item); this.siblings.forEach(upd); B.entries.forEach(upd);
+      for (const c of B.cache.values()) c.entries.forEach(upd);
+      if (this.item === item) this.renderMeta();
+      if (P.state !== 'max') B.render();
+    } catch { /* sem contagem */ }
+  },
   renderMeta() {
     const i = this.info; const parts = [];
     if (this.duration()) parts.push(fmtTime(this.duration()));
     if (i.video) parts.push(`${i.video.width}×${i.video.height}`, i.video.codec.toUpperCase());
     if (i.audio[this.audio]) parts.push(i.audio[this.audio].codec.toUpperCase() + (i.audio[this.audio].channels > 2 ? ` ${i.audio[this.audio].channels}ch` : ''));
     if (this.item.size) parts.push(fmtSize(this.item.size));
+    const v = this.item.views;
+    if (v && v.n) parts.push(`${v.n} ${v.n > 1 ? 'visualizações' : 'visualização'}${v.last ? ` · visto ${fmtDate(v.last)}` : ''}`);
     $('#d-meta').textContent = parts.join(' · ');
     $('#t-dur').textContent = fmtTime(this.duration());
   },
@@ -1280,7 +1404,7 @@ const P = {
   // ---------- a seguir (reprodução automática)
   onEnded() {
     this.saveProgress(); flushProgress();
-    if (prefs.loop) { this.seek(0); video.play(); return; }
+    if (prefs.loop) { this.watched = 0; this.viewCounted = false; this.seek(0); video.play(); return; }
     const i = this.index();
     if (!prefs.autoplay || i < 0 || i >= this.siblings.length - 1) { showControls(true); return; }
     const nx = this.siblings[i + 1];
@@ -1409,6 +1533,7 @@ video.addEventListener('error', () => {
 });
 video.addEventListener('timeupdate', () => {
   updateTime(); renderSubs();
+  P.trackView();
   if (Date.now() - P.lastSave > 5000) { P.lastSave = Date.now(); P.saveProgress(); }
   if ('mediaSession' in navigator && navigator.mediaSession.setPositionState && P.duration()) {
     try { navigator.mediaSession.setPositionState({ duration: P.duration(), position: clamp(P.time(), 0, P.duration()), playbackRate: video.playbackRate || 1 }); } catch { /* ignore */ }
@@ -1727,7 +1852,7 @@ function setPreview(img, t) {
   img._pvTimer = setTimeout(() => {
     const url = thumbUrl(P.item.path, r, 240);
     const pre = new Image();
-    pre.onload = () => { if (img.dataset.want === key) img.src = url; };
+    pre.onload = () => { if (img.dataset.want === key && pre.naturalWidth > 1) img.src = url; else if (pre.naturalWidth <= 1) delete img.dataset.want; };
     pre.src = url;
   }, 90);
 }

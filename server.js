@@ -106,23 +106,33 @@ function run(cmd, args, { timeout = 120000, maxBuffer = 64 * 1024 * 1024, bg = f
 }
 
 /** Fila simples para limitar processos ffmpeg simultâneos (miniaturas, legendas). */
-function makeQueue(concurrency, maxWaiting = Infinity) {
+// fifo: ordem de chegada (o navegador pede de cima para baixo). bump(key) passa um pedido que já está
+// esperando para a frente da fila: o app repete o pedido só das miniaturas visíveis na tela, então elas
+// furam a fila de pedidos antigos (de pastas que o usuário já deixou ou bem abaixo na rolagem).
+function makeQueue(concurrency, maxWaiting = Infinity, { lifo = false } = {}) {
   let active = 0; const waiting = [];
   const next = () => {
     if (active >= concurrency || !waiting.length) return;
     active++;
-    const { fn, resolve, reject } = waiting.shift();
+    const { fn, resolve, reject } = lifo ? waiting.pop() : waiting.shift();
     fn().then(resolve, reject).finally(() => { active--; next(); });
   };
-  return (fn) => new Promise((resolve, reject) => {
-    waiting.push({ fn, resolve, reject });
+  const q = (fn, key) => new Promise((resolve, reject) => {
+    waiting.push({ fn, resolve, reject, key });
     // fila cheia: descarta os pedidos mais antigos (o usuário já rolou a tela para outro lugar)
     while (waiting.length > maxWaiting) waiting.shift().reject(new HttpError(503, 'Fila cheia'));
     next();
   });
+  q.bump = (key) => {
+    const i = waiting.findIndex((w) => w.key === key);
+    if (i <= 0) return;
+    const [w] = waiting.splice(i, 1);
+    if (lifo) waiting.push(w); else waiting.unshift(w);
+  };
+  return q;
 }
-const thumbQueue = makeQueue(parseInt(process.env.THUMB_CONCURRENCY || '2', 10));
-const previewQueue = makeQueue(2);
+const thumbQueue = makeQueue(parseInt(process.env.THUMB_CONCURRENCY || '2', 10), 400);
+const previewQueue = makeQueue(2, 60);
 const subQueue = makeQueue(1);
 const clipQueue = makeQueue(parseInt(process.env.PREVIEW_CONCURRENCY || '1', 10), 3);
 
@@ -140,11 +150,27 @@ const exists = (p) => fsp.access(p).then(() => true, () => false);
 // ---------------------------------------------------------------- listing
 async function statSafe(p) { try { return await fsp.stat(p); } catch { return null; } }
 
+// cache das listagens: reler e dar stat em centenas de arquivos num HD (disputando com o ffmpeg) é lento.
+// Vale enquanto a pasta não mudar (mtime) e por no máximo 30s (tamanho/data de arquivos podem mudar).
+const listCache = new Map();
+const PENDING_GIF = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
 async function listDir(rel) {
   const abs = resolveSafe(rel);
   const st = await statSafe(abs);
   if (!st) throw new HttpError(404, 'Pasta não encontrada');
   if (!st.isDirectory()) throw new HttpError(400, 'Não é uma pasta');
+  const c = listCache.get(abs);
+  let entries;
+  if (c && c.mtime === st.mtimeMs && Date.now() - c.at < 30000) entries = c.entries;
+  else {
+    entries = await readEntries(abs, st);
+    listCache.set(abs, { mtime: st.mtimeMs, at: Date.now(), entries });
+    if (listCache.size > 300) listCache.delete(listCache.keys().next().value);
+  }
+  // tags e visualizações mudam sem mexer na pasta: sempre atuais
+  return { path: relOf(abs), entries: entries.map((e) => { const r = relOf(path.join(abs, e.name)); return { ...e, tags: tagsOf(r), views: viewsOf(r) }; }) };
+}
+async function readEntries(abs, st) {
   // pasta alterada depois da última indexação → reindexa em segundo plano
   if (index && st.mtimeMs > indexBuiltAt && !indexBuilding) indexBuilding = buildIndex().finally(() => { indexBuilding = null; });
   const dirents = await fsp.readdir(abs, { withFileTypes: true });
@@ -158,10 +184,10 @@ async function listDir(rel) {
       const s = stats[k];
       if (!s) return;
       const dir = s.isDirectory();
-      entries.push({ name: d.name, type: dir ? 'dir' : typeOf(d.name), size: dir ? 0 : s.size, mtime: s.mtimeMs, tags: tagsOf(relOf(path.join(abs, d.name))) });
+      entries.push({ name: d.name, type: dir ? 'dir' : typeOf(d.name), size: dir ? 0 : s.size, mtime: s.mtimeMs });
     });
   }
-  return { path: relOf(abs), entries };
+  return entries;
 }
 
 // ---------------------------------------------------------------- search index
@@ -221,7 +247,7 @@ async function search(q, scope, mediaOnly) {
   const top = results.slice(0, 300);
   const withStat = await Promise.all(top.map(async (it) => {
     const s = await statSafe(path.join(ROOT, it.p));
-    return { path: it.p, name: path.posix.basename(it.p), type: it.t, size: s && !it.d ? s.size : 0, mtime: s ? s.mtimeMs : 0, tags: tagsOf(it.p) };
+    return { path: it.p, name: path.posix.basename(it.p), type: it.t, size: s && !it.d ? s.size : 0, mtime: s ? s.mtimeMs : 0, tags: tagsOf(it.p), views: viewsOf(it.p) };
   }));
   return { results: withStat, total, indexedAt: indexBuiltAt };
 }
@@ -585,6 +611,7 @@ async function thumbnail(abs, t, width, { bg = false } = {}) {
   const failMark = out + '.fail';
   if (await exists(failMark)) throw new HttpError(404, 'Sem miniatura');
   const queue = t === 'auto' ? thumbQueue : previewQueue;
+  if (!bg) queue.bump(key); // pedido repetido da tela: passa na frente
   return once('thumb:' + key, () => queue(async () => {
     await fsp.mkdir(path.dirname(out), { recursive: true });
     let at = 0; let info = null;
@@ -614,7 +641,7 @@ async function thumbnail(abs, t, width, { bg = false } = {}) {
       if (t === 'auto') await fsp.writeFile(failMark, String(e.message)).catch(() => {});
       throw new HttpError(404, 'Sem miniatura');
     }
-  }));
+  }, key));
 }
 
 // ---------------------------------------------------------------- prévia em vídeo (estilo YouTube)
@@ -811,7 +838,7 @@ async function listFavorites() {
     const st = await statSafe(path.join(ROOT, f.path));
     const dir = st ? st.isDirectory() : f.type === 'dir';
     return { path: f.path, name: path.posix.basename(f.path) || 'Início', type: dir ? 'dir' : typeOf(f.path),
-      size: st && !dir ? st.size : 0, mtime: st ? st.mtimeMs : 0, added: f.added, missing: !st, tags: tagsOf(f.path) };
+      size: st && !dir ? st.size : 0, mtime: st ? st.mtimeMs : 0, added: f.added, missing: !st, tags: tagsOf(f.path), views: viewsOf(f.path) };
   }));
   return { items };
 }
@@ -915,10 +942,50 @@ async function itemsWithTag(tag) {
     const st = await statSafe(path.join(ROOT, rel));
     if (!st) continue;
     const dir = st.isDirectory();
-    out.push({ path: rel, name: path.posix.basename(rel), type: dir ? 'dir' : typeOf(rel), size: dir ? 0 : st.size, mtime: st.mtimeMs, tags: list });
+    out.push({ path: rel, name: path.posix.basename(rel), type: dir ? 'dir' : typeOf(rel), size: dir ? 0 : st.size, mtime: st.mtimeMs, tags: list, views: viewsOf(rel) });
   }
   out.sort((a, b) => ((b.type === 'dir') - (a.type === 'dir')) || a.name.localeCompare(b.name, 'pt-BR', { numeric: true }));
   return { items: out };
+}
+
+// ---------------------------------------------------------------- visualizações
+// Quantas vezes cada vídeo foi assistido (contado pelo player depois de ~30s assistidos) e quando.
+// Guardado no servidor: igual em todos os aparelhos.
+const VIEWS_FILE = path.join(DATA_DIR, 'views.json');
+let viewDb = null; // { path: { n, last, first } }
+async function loadViews() {
+  if (!viewDb) { viewDb = await loadJSON(VIEWS_FILE, null); if (!viewDb || typeof viewDb !== 'object' || Array.isArray(viewDb)) viewDb = {}; }
+  return viewDb;
+}
+let viewSaveTimer = null;
+const saveViews = (now = false) => {
+  clearTimeout(viewSaveTimer);
+  if (now) return saveJSON(VIEWS_FILE, viewDb);
+  viewSaveTimer = setTimeout(() => saveJSON(VIEWS_FILE, viewDb), 2000); // agrupa várias contagens seguidas
+  return Promise.resolve();
+};
+const viewsOf = (rel) => (viewDb && viewDb[rel]) || undefined;
+const viewLimiter = new Map(); // evita contar o mesmo vídeo várias vezes seguidas (ex.: recarregar a página)
+async function addView(req, rel) {
+  if (req.method !== 'POST' || req.headers['x-zv'] !== '1') throw new HttpError(403, 'Requisição inválida');
+  const abs = resolveSafe(rel); const r = relOf(abs);
+  const st = await statSafe(abs);
+  if (!st || !st.isFile()) throw new HttpError(404, 'Arquivo não encontrado');
+  const db = await loadViews();
+  const key = `${req.socket.remoteAddress}|${r}`;
+  if (Date.now() - (viewLimiter.get(key) || 0) < 60000) return { ok: true, views: db[r], counted: false };
+  viewLimiter.set(key, Date.now());
+  if (viewLimiter.size > 5000) viewLimiter.delete(viewLimiter.keys().next().value);
+  const now = Date.now();
+  const v = db[r] || { n: 0, first: now };
+  v.n += 1; v.last = now; db[r] = v;
+  await saveViews();
+  return { ok: true, views: v, counted: true };
+}
+async function clearViews(rel) {
+  const db = await loadViews(); const r = relOf(resolveSafe(rel));
+  delete db[r]; await saveViews(true);
+  return { ok: true };
 }
 
 // ---------------------------------------------------------------- administração (gerenciar arquivos)
@@ -1091,6 +1158,9 @@ async function relocate(pairs) {
   const items = {};
   for (const [k, v] of Object.entries(db.items)) { const n = map(k); if (n !== null) tagChanged = true; items[n !== null ? n : k] = v; }
   db.items = items;
+  const vdb = await loadViews(); const nv = {}; let viewChanged = false;
+  for (const [k, v] of Object.entries(vdb)) { const n = map(k); if (n !== null) viewChanged = true; nv[n !== null ? n : k] = v; }
+  if (viewChanged) { viewDb = nv; await saveViews(true); }
   if (favChanged) await saveFavorites();
   if (tagChanged) await saveTags();
   indexBuiltAt = 0; // a pesquisa reindexa na próxima consulta
@@ -1099,12 +1169,14 @@ async function forget(rels) {
   // remove favoritos/tags de itens apagados; devolve o que foi removido (para restaurar da lixeira)
   const favs = await loadFavorites(); const db = await loadTags();
   const under = (p, a) => p === a || p.startsWith(a + '/');
-  const saved = { favs: [], tags: {} };
+  const vdb = await loadViews();
+  const saved = { favs: [], tags: {}, views: {} };
   for (const a of rels) {
     for (let i = favs.length - 1; i >= 0; i--) if (under(favs[i].path, a)) { saved.favs.push(favs[i]); favs.splice(i, 1); }
     for (const k of Object.keys(db.items)) if (under(k, a)) { saved.tags[k] = db.items[k]; delete db.items[k]; }
+    for (const k of Object.keys(vdb)) if (under(k, a)) { saved.views[k] = vdb[k]; delete vdb[k]; }
   }
-  await saveFavorites(); await saveTags();
+  await saveFavorites(); await saveTags(); await saveViews(true);
   indexBuiltAt = 0;
   return saved;
 }
@@ -1261,6 +1333,9 @@ async function fsAction(action, body) {
             const fix = (p) => (p === t.original ? newRel : p.startsWith(t.original + '/') ? newRel + p.slice(t.original.length) : p);
             for (const f of (t.saved && t.saved.favs) || []) favs.push({ ...f, path: fix(f.path) });
             for (const [k, v] of Object.entries((t.saved && t.saved.tags) || {})) db.items[fix(k)] = v;
+            const vdb = await loadViews();
+            for (const [k, v] of Object.entries((t.saved && t.saved.views) || {})) vdb[fix(k)] = v;
+            await saveViews(true);
             await saveFavorites(); await saveTags();
             trash.splice(i, 1); restored.push(newRel);
           } catch (e) { errors.push(`${t.name}: ${fsError(e).message}`); }
@@ -1338,7 +1413,11 @@ const server = http.createServer(async (req, res) => {
     if (!p.startsWith('/api/')) return await serveStatic(req, res, p);
 
     switch (p) {
-      case '/api/list': return sendJSON(res, await listDir(q.get('path') || ''));
+      case '/api/list': lastUserActivity = Date.now(); return sendJSON(res, await listDir(q.get('path') || ''));
+      case '/api/views': {
+        if (q.get('clear')) { await requireAdmin(req); return sendJSON(res, await clearViews(q.get('path') || '')); }
+        return sendJSON(res, await addView(req, q.get('path') || ''));
+      }
       case '/api/search': return sendJSON(res, await search(q.get('q') || '', q.get('scope') || '', q.get('media') !== '0'));
       case '/api/reindex': await buildIndex(); return sendJSON(res, { ok: true, count: index.length });
       case '/api/info': {
@@ -1382,7 +1461,16 @@ const server = http.createServer(async (req, res) => {
         const t = q.get('t');
         const w = Math.min(640, Math.max(80, parseInt(q.get('w') || '320', 10) || 320));
         lastUserActivity = Date.now();
-        const file = await thumbnail(abs, t == null ? 'auto' : String(Math.round(parseFloat(t) / 5) * 5), w);
+        const job = thumbnail(abs, t == null ? 'auto' : String(Math.round(parseFloat(t) / 5) * 5), w);
+        // se não fica pronta logo, responde "tente de novo" em vez de segurar a conexão: o navegador só abre
+        // ~6 conexões por servidor, e miniaturas esperando travavam a navegação entre pastas
+        const file = await Promise.race([job, new Promise((r) => setTimeout(() => r(null), 400))]);
+        if (!file) {
+          // imagem de 1×1 = "ainda gerando" (uma <img> não consegue ler o status HTTP); o app tenta de novo
+          job.catch(() => {});
+          res.writeHead(200, { 'Content-Type': 'image/gif', 'Cache-Control': 'no-store', 'X-Pending': '1', 'Content-Length': PENDING_GIF.length });
+          return res.end(PENDING_GIF);
+        }
         return await serveFile(req, res, file, { cache: true, immutable: !!q.get('v') });
       }
       case '/api/subtitle': {
@@ -1427,6 +1515,7 @@ server.listen(PORT, () => {
   console.log(`Zima Video em http://0.0.0.0:${PORT}  (mídia: ${ROOT}, cache: ${CACHE}, hwaccel: ${HWACCEL})`);
   getIndex().catch((e) => console.warn('[busca] falha ao indexar:', e.message));
   loadTags().catch(() => {});
+  loadViews().catch(() => {});
   adminEnabled().then((on) => console.log(on ? 'Modo administrador: ativado' : 'Modo administrador: sem senha (crie pelo menu ⋮ do app)'));
   const ro = readonlyMounts(); if (ro.length) console.log('Somente leitura:', ro.join(', '));
 });

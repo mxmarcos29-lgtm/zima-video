@@ -73,7 +73,8 @@ const Tags = {
     const list = $('#list');
     list.className = 'list' + (prefs.view === 'grid' ? ' grid' : '');
     list.innerHTML = '';
-    for (const e of items) list.appendChild(renderItem(e, { showPath: true }));
+    renderViewFilterBar();
+    for (const e of B.sorted(viewFilter(items))) list.appendChild(renderItem(e, { showPath: true }));
     $('#empty').classList.toggle('hidden', !!items.length);
     if (!items.length) $('#empty').innerHTML = `${icon('tag')}Nenhum item com a tag “${esc(tag)}”`;
     document.title = `${tag} — Zima Video`;

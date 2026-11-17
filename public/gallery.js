@@ -27,7 +27,7 @@ const Gallery = (() => {
     s.dataset.path = item.path;
     img.classList.remove('ok'); low.classList.remove('ok');
     spin.classList.remove('hidden');
-    low.onload = () => low.classList.add('ok');
+    low.onload = () => { if (low.naturalWidth > 1) low.classList.add('ok'); };
     low.onerror = () => low.removeAttribute('src');
     low.src = thumbUrl(item.path, null, 640, item.mtime);
     img.onload = () => { if (s.dataset.path === item.path) { img.classList.add('ok'); spin.classList.add('hidden'); } };
