@@ -1,2 +1,6 @@
 cache/
 node_modules/
+worker/models/
+worker/.venv/
+worker/config.json
+worker/__pycache__/

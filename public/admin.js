@@ -187,6 +187,12 @@ const Tags = {
         pal.appendChild(sw);
       }
       b.appendChild(pal);
+      Sheet.row(b, { ico: 'person', label: 'É uma pessoa', toggle: true, on: !!t.person, onClick: async () => {
+        try { this.apply(await apiPost('tags', { action: 'edit' }, { name: t.name, person: !t.person })); t.person = !t.person; this.manage(t, back); } catch (e) { toast(e.message); }
+      } });
+      if (t.person) Sheet.row(b, { ico: 'edit', label: 'Outras formas do nome', value: (t.aliases || []).join(', ') || 'nenhuma', onClick: () => Admin.prompt(`Outros nomes de ${t.name} (separe por vírgula)`, (t.aliases || []).join(', '), async (v) => {
+        try { const aliases = v.split(',').map((x) => x.trim()).filter(Boolean); this.apply(await apiPost('tags', { action: 'edit' }, { name: t.name, aliases })); t.aliases = aliases; } catch (e) { toast(e.message); }
+      }) });
       Sheet.row(b, { ico: 'edit', label: 'Renomear tag', onClick: () => Admin.prompt('Renomear tag', t.name, async (v) => {
         try { this.apply(await apiPost('tags', { action: 'edit' }, { name: t.name, newName: v })); B.load(B.path, false); if (back) back(); } catch (e) { toast(e.message); }
       }) });
@@ -702,6 +708,7 @@ const Admin = {
     this.readonlyNote(b);
     Sheet.row(b, { ico: 'check', label: 'Selecionar itens', onClick: () => { Sheet.close(); this.enter(); this.updateBar(); } });
     Sheet.row(b, { ico: 'check', label: 'Selecionar tudo desta pasta', onClick: () => { Sheet.close(); this.enter(); this.setSel(this.items(), true); } });
+    Sheet.row(b, { ico: 'person', label: 'Pessoas (reconhecer pelo nome e pelo rosto)', chevron: true, onClick: () => { Sheet.close(); whenHistoryIdle(() => People.show()); } });
     if (!B.tagView) Sheet.row(b, { ico: 'add', label: 'Nova pasta aqui', onClick: () => this.newFolder() });
     Sheet.row(b, { ico: 'delete', label: 'Lixeira', onClick: () => this.trash() });
     if (!this.fromEnv) Sheet.row(b, { ico: 'lock', label: 'Trocar senha de administrador', onClick: () => this.changePassword() });

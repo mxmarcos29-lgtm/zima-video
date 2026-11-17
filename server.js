@@ -896,7 +896,7 @@ async function listTags() {
   const db = await loadTags();
   const count = {};
   for (const list of Object.values(db.items)) for (const t of list) count[t] = (count[t] || 0) + 1;
-  const tags = Object.entries(db.tags).map(([name, v]) => ({ name, color: v.color, count: count[name] || 0 }))
+  const tags = Object.entries(db.tags).map(([name, v]) => ({ name, color: v.color, count: count[name] || 0, person: !!v.person, aliases: v.aliases || [] }))
     .sort((a, b) => ptSort(a.name, b.name));
   return { tags };
 }
@@ -915,20 +915,25 @@ async function assignTags({ paths, add = [], remove = [] }) {
   await saveTags();
   return listTags();
 }
-async function editTag({ name, newName, color, remove }) {
+async function editTag({ name, newName, color, remove, person, aliases }) {
   const db = await loadTags();
   name = cleanTagName(name);
   if (!db.tags[name]) throw new HttpError(404, 'Tag não encontrada');
   if (remove) {
     delete db.tags[name];
     for (const [k, list] of Object.entries(db.items)) { const l = list.filter((t) => t !== name); if (l.length) db.items[k] = l; else delete db.items[k]; }
+    await peopleTagRenamed(name, null);
   } else {
     if (color && /^#[0-9a-f]{6}$/i.test(color)) db.tags[name].color = color;
+    // pessoa: usada na detecção pelo nome dos arquivos e pelo rosto; apelidos = outras formas do nome
+    if (person != null) db.tags[name].person = !!person;
+    if (Array.isArray(aliases)) db.tags[name].aliases = [...new Set(aliases.map((a) => String(a).replace(/\s+/g, ' ').trim().slice(0, 60)).filter(Boolean))].slice(0, 20);
     if (newName && cleanTagName(newName) !== name) {
       const nn = cleanTagName(newName);
       if (db.tags[nn]) throw new HttpError(409, 'Já existe uma tag com esse nome');
       db.tags[nn] = db.tags[name]; delete db.tags[name];
       for (const [k, list] of Object.entries(db.items)) db.items[k] = [...new Set(list.map((t) => (t === name ? nn : t)))].sort(ptSort);
+      await peopleTagRenamed(name, nn);
     }
   }
   await saveTags();
@@ -1089,6 +1094,9 @@ async function requireAdmin(req) {
   if (!(await adminEnabled())) throw new HttpError(403, 'Crie a senha de administrador primeiro (menu ⋮)');
   if (!(await isAdmin(req))) throw new HttpError(401, 'Entre no modo administrador');
 }
+async function requireAdminGet(req) {
+  if (!(await isAdmin(req))) throw new HttpError(401, 'Entre no modo administrador');
+}
 const loginFails = new Map(); // ip -> { n, until }
 async function adminLogin(req, res) {
   if (req.method !== 'POST' || req.headers['x-zv'] !== '1') throw new HttpError(403, 'Requisição inválida');
@@ -1161,6 +1169,7 @@ async function relocate(pairs) {
   const vdb = await loadViews(); const nv = {}; let viewChanged = false;
   for (const [k, v] of Object.entries(vdb)) { const n = map(k); if (n !== null) viewChanged = true; nv[n !== null ? n : k] = v; }
   if (viewChanged) { viewDb = nv; await saveViews(true); }
+  await peopleRelocate(pairs);
   if (favChanged) await saveFavorites();
   if (tagChanged) await saveTags();
   indexBuiltAt = 0; // a pesquisa reindexa na próxima consulta
@@ -1177,6 +1186,7 @@ async function forget(rels) {
     for (const k of Object.keys(vdb)) if (under(k, a)) { saved.views[k] = vdb[k]; delete vdb[k]; }
   }
   await saveFavorites(); await saveTags(); await saveViews(true);
+  await peopleRelocate([], rels); // rostos de itens apagados saem da análise (refazem se restaurados)
   indexBuiltAt = 0;
   return saved;
 }
@@ -1359,6 +1369,337 @@ async function fsAction(action, body) {
   } catch (e) { throw fsError(e); }
 }
 
+// ---------------------------------------------------------------- pessoas
+// Duas fontes de sugestão de tags de pessoa (tags marcadas como "pessoa"):
+//  1) nome do arquivo: procura o nome/apelidos da pessoa no nome do arquivo (sem acentos, pontuação etc.)
+//  2) rosto: um "ajudante" no PC analisa quadros dos vídeos (detecção SCRFD + assinatura ArcFace) e manda
+//     as assinaturas dos rostos. Aqui elas são agrupadas (rostos parecidos) e comparadas com as pessoas que
+//     o usuário nomeou. O NAS não faz o trabalho pesado: só guarda e compara (produto escalar de vetores).
+const PEOPLE_DIR = path.join(DATA_DIR, 'faces');
+const PEOPLE_FILE = path.join(DATA_DIR, 'people.json');
+const WORKER_FILE = path.join(DATA_DIR, 'worker.json');
+const FACE_MATCH = 0.42;   // semelhança mínima para sugerir uma pessoa (ArcFace: mesma pessoa ~0,5–0,99; outra < 0,3)
+const FACE_CLUSTER = 0.45; // semelhança mínima para juntar rostos sem nome no mesmo grupo
+fs.mkdirSync(path.join(PEOPLE_DIR, 'v'), { recursive: true });
+fs.mkdirSync(path.join(PEOPLE_DIR, 'c'), { recursive: true });
+
+const faceVideos = new Map(); // path -> { key, at, frames, faces: [{ id, t, score, n, emb: Float32Array }] }
+const faceById = new Map();   // id -> { path, face }
+let peopleDb = { refs: {}, ignored: {} }; // refs: tag -> [faceId]; ignored: faceId -> 1
+let clusterCache = null;
+const b64ToEmb = (b) => { const buf = Buffer.from(b, 'base64'); return new Float32Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.length)); };
+const embToB64 = (e) => Buffer.from(e.buffer, e.byteOffset, e.byteLength).toString('base64');
+const dot = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; };
+const videoFile = (rel) => path.join(PEOPLE_DIR, 'v', sha1(rel).slice(0, 2), sha1(rel) + '.json');
+
+function indexFaces(rel, rec) {
+  const old = faceVideos.get(rel);
+  if (old) for (const f of old.faces) faceById.delete(f.id);
+  if (!rec) { faceVideos.delete(rel); clusterCache = null; return; }
+  faceVideos.set(rel, rec);
+  for (const f of rec.faces) faceById.set(f.id, { path: rel, face: f });
+  clusterCache = null;
+}
+(function loadFaces() {
+  try {
+    for (const d of fs.readdirSync(path.join(PEOPLE_DIR, 'v'))) {
+      for (const f of fs.readdirSync(path.join(PEOPLE_DIR, 'v', d))) {
+        try {
+          const j = JSON.parse(fs.readFileSync(path.join(PEOPLE_DIR, 'v', d, f), 'utf8'));
+          indexFaces(j.path, { key: j.key, at: j.at, frames: j.frames, status: j.status, faces: (j.faces || []).map((x) => ({ ...x, emb: b64ToEmb(x.emb) })) });
+        } catch { /* arquivo corrompido: ignora */ }
+      }
+    }
+  } catch { /* sem dados */ }
+  try { const j = JSON.parse(fs.readFileSync(PEOPLE_FILE, 'utf8')); peopleDb = { refs: j.refs || {}, ignored: j.ignored || {} }; } catch { /* vazio */ }
+})();
+async function saveFaceVideo(rel, rec) {
+  const file = videoFile(rel);
+  await fsp.mkdir(path.dirname(file), { recursive: true });
+  await saveJSON(file, { path: rel, key: rec.key, at: rec.at, frames: rec.frames, status: rec.status, faces: rec.faces.map((f) => ({ ...f, emb: embToB64(f.emb) })) });
+}
+const savePeople = () => { clusterCache = null; return saveJSON(PEOPLE_FILE, peopleDb); };
+async function peopleTagRenamed(from, to) {
+  if (!peopleDb.refs[from]) return;
+  if (to) peopleDb.refs[to] = [...new Set([...(peopleDb.refs[to] || []), ...peopleDb.refs[from]])];
+  delete peopleDb.refs[from];
+  await savePeople();
+}
+// renomear/mover/excluir arquivos: os rostos acompanham
+async function peopleRelocate(pairs, removed = []) {
+  const map = (p) => { for (const [a, b] of pairs) { if (p === a) return b; if (p.startsWith(a + '/')) return b + p.slice(a.length); } return null; };
+  for (const [rel, rec] of [...faceVideos.entries()]) {
+    const n = map(rel);
+    const gone = removed.some((a) => rel === a || rel.startsWith(a + '/'));
+    if (n === null && !gone) continue;
+    fs.rm(videoFile(rel), { force: true }, () => {});
+    indexFaces(rel, null);
+    if (n !== null) { indexFaces(n, rec); await saveFaceVideo(n, rec); }
+  }
+}
+
+// embeddings de referência de cada pessoa (rostos que o usuário confirmou)
+function personRefs() {
+  const out = [];
+  for (const [tag, ids] of Object.entries(peopleDb.refs)) {
+    const embs = ids.map((id) => faceById.get(id)).filter(Boolean).map((x) => x.face.emb);
+    if (embs.length) out.push({ tag, embs });
+  }
+  return out;
+}
+function bestPerson(emb, refs) {
+  let best = null; let sim = -1;
+  for (const r of refs) for (const e of r.embs) { const s = dot(emb, e); if (s > sim) { sim = s; best = r.tag; } }
+  return { tag: best, sim };
+}
+
+// grupos de rostos sem nome (agrupamento guloso pela média do grupo)
+function faceClusters() {
+  if (clusterCache) return clusterCache;
+  const refs = personRefs();
+  const named = new Set(Object.values(peopleDb.refs).flat());
+  const pool = [];
+  for (const [rel, rec] of faceVideos) {
+    for (const f of rec.faces) {
+      if (named.has(f.id) || peopleDb.ignored[f.id]) continue;
+      if (refs.length && bestPerson(f.emb, refs).sim >= FACE_MATCH) continue; // já reconhecido
+      pool.push({ rel, f });
+    }
+  }
+  pool.sort((a, b) => (b.f.n || 1) - (a.f.n || 1) || b.f.score - a.f.score);
+  const clusters = [];
+  for (const it of pool) {
+    let best = null; let bs = FACE_CLUSTER;
+    for (const c of clusters) { const s = dot(it.f.emb, c.mean); if (s > bs) { bs = s; best = c; } }
+    if (!best) { best = { sum: new Float32Array(it.f.emb), mean: new Float32Array(it.f.emb), faces: [], videos: new Set() }; clusters.push(best); }
+    else {
+      for (let i = 0; i < best.sum.length; i++) best.sum[i] += it.f.emb[i];
+      let nrm = 0; for (let i = 0; i < best.sum.length; i++) nrm += best.sum[i] * best.sum[i];
+      nrm = Math.sqrt(nrm) || 1; for (let i = 0; i < best.sum.length; i++) best.mean[i] = best.sum[i] / nrm;
+    }
+    best.faces.push(it.f.id); best.videos.add(it.rel);
+  }
+  clusterCache = clusters
+    .map((c) => ({ id: c.faces[0], faces: c.faces, sample: c.faces.slice(0, 8), count: c.faces.length, videos: c.videos.size }))
+    .sort((a, b) => b.videos - a.videos || b.count - a.count);
+  return clusterCache;
+}
+
+// sugestões de tags: rostos parecidos com pessoas nomeadas, em vídeos que ainda não têm a tag
+async function faceSuggestions() {
+  const refs = personRefs(); if (!refs.length) return [];
+  const db = await loadTags();
+  const best = new Map(); // `${path}|${tag}` -> sugestão com maior semelhança
+  for (const [rel, rec] of faceVideos) {
+    const has = new Set(db.items[rel] || []);
+    for (const f of rec.faces) {
+      if (peopleDb.ignored[f.id]) continue;
+      const m = bestPerson(f.emb, refs);
+      if (m.sim < FACE_MATCH || has.has(m.tag)) continue;
+      const k = `${rel}|${m.tag}`;
+      if (!best.has(k) || best.get(k).sim < m.sim) best.set(k, { path: rel, name: path.posix.basename(rel), tag: m.tag, sim: +m.sim.toFixed(3), face: f.id, via: 'rosto' });
+    }
+  }
+  return [...best.values()].sort((a, b) => b.sim - a.sim).slice(0, 1000);
+}
+
+// ---- pelo nome do arquivo
+const normName = (s) => ` ${norm(String(s)).replace(/\.[a-z0-9]{2,4}$/, '').replace(/[^a-z0-9]+/g, ' ').trim()} `;
+const NAME_STOP = new Set(('the and com sem para por dos das de da do e o a os as em no na vs feat ft part parte cena scene full hd uhd video '
+  + 'clip episodio episode temporada season dublado legendado remastered extended director cut edition version official trailer '
+  + 'new best collection compilation bonus behind making uncut original').split(' '));
+async function nameSuggestions(scope) {
+  const db = await loadTags();
+  const people = Object.entries(db.tags).filter(([, v]) => v.person)
+    .map(([tag, v]) => ({ tag, pats: [tag, ...(v.aliases || [])].map((x) => normName(x)).filter((x) => x.trim().length >= 3) }));
+  const idx = await getIndex();
+  let prefix = ''; if (scope) { prefix = relOf(resolveSafe(scope)); if (prefix) prefix += '/'; }
+  const sugg = []; const cand = new Map(); // nome possível -> Set(arquivos)
+  const known = new Set(Object.keys(db.tags).map((t) => normName(t)));
+  for (const [, v] of Object.entries(db.tags)) for (const a of v.aliases || []) known.add(normName(a));
+  for (const it of idx) {
+    if (it.d || it.t !== 'video' || (prefix && !it.p.startsWith(prefix))) continue;
+    const name = path.posix.basename(it.p);
+    const n = normName(name);
+    const has = new Set(db.items[it.p] || []);
+    for (const pp of people) {
+      if (has.has(pp.tag)) continue;
+      const hit = pp.pats.find((x) => n.includes(x));
+      if (hit) sugg.push({ path: it.p, name, tag: pp.tag, match: hit.trim(), via: 'nome' });
+    }
+    // nomes possíveis: 2–3 palavras seguidas com inicial maiúscula (ex.: "Maria Souza"), repetidas em vários arquivos
+    const words = name.replace(/\.[A-Za-z0-9]{2,4}$/, '').split(/[\s._\-[\](){},+&@#!]+/).filter(Boolean);
+    const isCap = (w) => /^[A-ZÀ-Þ][a-zà-ÿ]{1,}$/.test(w) && !NAME_STOP.has(norm(w));
+    for (let i = 0; i < words.length; i++) {
+      for (const len of [2, 3]) {
+        const seq = words.slice(i, i + len);
+        if (seq.length < len || !seq.every(isCap)) continue;
+        const k = seq.join(' ');
+        if (known.has(normName(k))) continue;
+        if (!cand.has(k)) cand.set(k, new Set());
+        cand.get(k).add(it.p);
+      }
+    }
+  }
+  const names = [...cand.entries()].filter(([, set]) => set.size >= 2)
+    .map(([nameStr, set]) => ({ name: nameStr, files: set.size, sample: [...set].slice(0, 3).map((p) => path.posix.basename(p)) }))
+    .sort((a, b) => b.files - a.files).slice(0, 60);
+  // nomes de 3 palavras que contêm um de 2 com a mesma contagem: fica só o mais completo
+  const final = names.filter((x) => !names.some((y) => y !== x && y.name.includes(x.name) && y.files === x.files));
+  return { suggestions: sugg.slice(0, 2000), names: final };
+}
+
+// aplicar sugestões (pares arquivo → tag)
+async function applySuggestions(pairs) {
+  const db = await loadTags();
+  let n = 0;
+  for (const { path: p, tag } of pairs || []) {
+    const rel = relOf(resolveSafe(p)); const t = cleanTagName(tag);
+    if (!db.tags[t]) continue;
+    const set = new Set(db.items[rel] || []);
+    if (!set.has(t)) { set.add(t); db.items[rel] = [...set].sort(ptSort); n++; }
+  }
+  await saveTags();
+  return { ok: true, applied: n, ...(await listTags()) };
+}
+async function ensurePersonTag(name) {
+  const db = await loadTags(); const t = cleanTagName(name);
+  if (!db.tags[t]) db.tags[t] = { color: TAG_COLORS[Object.keys(db.tags).length % TAG_COLORS.length] };
+  db.tags[t].person = true;
+  await saveTags();
+  return t;
+}
+// dar nome a um grupo de rostos: vira referência da pessoa (e marca os vídeos desses rostos)
+async function nameFaces({ faces, name, apply = true }) {
+  const t = await ensurePersonTag(name);
+  const ids = (faces || []).filter((id) => faceById.has(id));
+  peopleDb.refs[t] = [...new Set([...(peopleDb.refs[t] || []), ...ids])];
+  for (const id of ids) delete peopleDb.ignored[id];
+  await savePeople();
+  if (apply) await applySuggestions([...new Set(ids.map((id) => faceById.get(id).path))].map((p) => ({ path: p, tag: t })));
+  return { ok: true, tag: t, ...(await listTags()) };
+}
+async function ignoreFaces({ faces }) {
+  for (const id of faces || []) if (faceById.has(id)) peopleDb.ignored[id] = 1;
+  await savePeople();
+  return { ok: true };
+}
+async function peopleStatus() {
+  const idx = await getIndex();
+  const vids = idx.filter((it) => it.t === 'video');
+  let done = 0; let failed = 0; let faces = 0;
+  for (const it of vids) { const r = faceVideos.get(it.p); if (r) { if (r.status === 'failed') failed++; else done++; faces += r.faces.length; } }
+  const w = await loadJSON(WORKER_FILE, { tokens: [] });
+  return {
+    videos: vids.length, analyzed: done, failed, faces, people: Object.keys(peopleDb.refs).length,
+    workers: (w.tokens || []).map((t) => ({ name: t.name, created: t.created, lastSeen: t.lastSeen || 0, info: t.info || '' })),
+  };
+}
+
+// ---- download do ajudante: a pasta worker/ compactada num .zip (sem dependências)
+async function sendWorkerZip(res) {
+  const dir = path.join(__dirname, 'worker');
+  const names = (await fsp.readdir(dir)).filter((n) => !n.startsWith('.') && !n.startsWith('__') && /\.(py|txt|bat|md|json)$/.test(n));
+  const parts = []; const central = []; let offset = 0;
+  const dosTime = (() => { const d = new Date(); return { t: (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1), d: ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate() }; })();
+  for (const n of names) {
+    let data = await fsp.readFile(path.join(dir, n));
+    if (n.endsWith('.bat')) data = Buffer.from(data.toString('utf8').replace(/\r?\n/g, '\r\n')); // .bat precisa de CRLF no Windows
+    const crc = zlib.crc32(data); const comp = zlib.deflateRawSync(data);
+    const name = Buffer.from('ZimaVideo-Ajudante/' + n);
+    const h = Buffer.alloc(30);
+    h.writeUInt32LE(0x04034b50, 0); h.writeUInt16LE(20, 4); h.writeUInt16LE(0x0800, 6); h.writeUInt16LE(8, 8);
+    h.writeUInt16LE(dosTime.t, 10); h.writeUInt16LE(dosTime.d, 12); h.writeUInt32LE(crc >>> 0, 14);
+    h.writeUInt32LE(comp.length, 18); h.writeUInt32LE(data.length, 22); h.writeUInt16LE(name.length, 26); h.writeUInt16LE(0, 28);
+    parts.push(h, name, comp);
+    const c = Buffer.alloc(46);
+    c.writeUInt32LE(0x02014b50, 0); c.writeUInt16LE(20, 4); c.writeUInt16LE(20, 6); c.writeUInt16LE(0x0800, 8); c.writeUInt16LE(8, 10);
+    c.writeUInt16LE(dosTime.t, 12); c.writeUInt16LE(dosTime.d, 14); c.writeUInt32LE(crc >>> 0, 16);
+    c.writeUInt32LE(comp.length, 20); c.writeUInt32LE(data.length, 24); c.writeUInt16LE(name.length, 28);
+    c.writeUInt32LE(offset, 42);
+    central.push(c, name);
+    offset += h.length + name.length + comp.length;
+  }
+  const cd = Buffer.concat(central);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0); end.writeUInt16LE(names.length, 8); end.writeUInt16LE(names.length, 10);
+  end.writeUInt32LE(cd.length, 12); end.writeUInt32LE(offset, 16);
+  const zip = Buffer.concat([...parts, cd, end]);
+  res.writeHead(200, { 'Content-Type': 'application/zip', 'Content-Length': zip.length, 'Content-Disposition': 'attachment; filename="ZimaVideo-Ajudante.zip"', 'Cache-Control': 'no-store' });
+  res.end(zip);
+}
+
+// ---- ajudante (PC): autenticado por código próprio (Bearer), não pela senha de administrador
+const workerJobs = new Map(); // path -> até quando está reservado para um ajudante
+const workerFails = new Map();
+async function createWorkerToken(name) {
+  const w = await loadJSON(WORKER_FILE, { tokens: [] });
+  const token = crypto.randomBytes(24).toString('base64url');
+  w.tokens = (w.tokens || []).filter((t) => t.name !== name);
+  w.tokens.push({ name: String(name || 'PC').slice(0, 40), hash: sha1('zv-worker|' + token), created: Date.now() });
+  await saveJSON(WORKER_FILE, w);
+  return { token };
+}
+async function revokeWorker(name) {
+  const w = await loadJSON(WORKER_FILE, { tokens: [] });
+  w.tokens = (w.tokens || []).filter((t) => t.name !== name);
+  await saveJSON(WORKER_FILE, w);
+  return { ok: true };
+}
+let workerSeenSave = 0;
+async function requireWorker(req) {
+  const h = req.headers.authorization || '';
+  if (!h.startsWith('Bearer ')) throw new HttpError(401, 'Código do ajudante ausente');
+  const hash = sha1('zv-worker|' + h.slice(7).trim());
+  const w = await loadJSON(WORKER_FILE, { tokens: [] });
+  const t = (w.tokens || []).find((x) => x.hash.length === hash.length && crypto.timingSafeEqual(Buffer.from(x.hash), Buffer.from(hash)));
+  if (!t) throw new HttpError(401, 'Código do ajudante inválido (gere outro no app)');
+  t.lastSeen = Date.now();
+  if (req.headers['x-worker-info']) t.info = String(req.headers['x-worker-info']).slice(0, 120);
+  if (Date.now() - workerSeenSave > 30000) { workerSeenSave = Date.now(); await saveJSON(WORKER_FILE, w); }
+  return t;
+}
+async function nextWorkerJob() {
+  const idx = await getIndex();
+  const now = Date.now();
+  for (const it of idx) {
+    if (it.t !== 'video') continue;
+    if (faceVideos.has(it.p)) continue;
+    if ((workerJobs.get(it.p) || 0) > now) continue;
+    if ((workerFails.get(it.p) || 0) >= 3) continue;
+    const abs = path.join(ROOT, it.p);
+    const st = await statSafe(abs); if (!st) continue;
+    let duration = 0; try { duration = (await probe(abs)).duration; } catch { workerFails.set(it.p, (workerFails.get(it.p) || 0) + 1); continue; }
+    workerJobs.set(it.p, now + 15 * 60000);
+    return { path: it.p, key: `${st.size}|${st.mtimeMs}`, duration, url: `/api/worker/file?${new URLSearchParams({ path: it.p })}` };
+  }
+  return { none: true, wait: 60 };
+}
+async function workerResult(body) {
+  const rel = relOf(resolveSafe(body.path));
+  if (!(await statSafe(path.join(ROOT, rel)))) throw new HttpError(404, 'Arquivo não existe mais');
+  const faces = [];
+  for (const f of (body.faces || []).slice(0, 200)) {
+    if (!f.emb) continue;
+    const emb = b64ToEmb(f.emb); if (emb.length !== 512) continue;
+    const id = crypto.randomBytes(6).toString('hex');
+    if (f.crop) {
+      const cf = path.join(PEOPLE_DIR, 'c', id.slice(0, 2), id + '.jpg');
+      await fsp.mkdir(path.dirname(cf), { recursive: true });
+      await fsp.writeFile(cf, Buffer.from(f.crop, 'base64'));
+    }
+    faces.push({ id, t: +f.t || 0, score: +f.score || 0, n: +f.n || 1, g: f.group != null ? +f.group : null, emb });
+  }
+  const rec = { key: body.key, at: Date.now(), frames: +body.frames || 0, status: body.error ? 'failed' : 'ok', faces };
+  // substitui análise antiga (apaga recortes antigos)
+  const old = faceVideos.get(rel);
+  if (old) for (const f of old.faces) fs.rm(path.join(PEOPLE_DIR, 'c', f.id.slice(0, 2), f.id + '.jpg'), { force: true }, () => {});
+  indexFaces(rel, rec);
+  await saveFaceVideo(rel, rec);
+  workerJobs.delete(rel);
+  return { ok: true, faces: faces.length };
+}
+
 // ---------------------------------------------------------------- static
 const staticGz = new Map();
 async function serveStatic(req, res, pathname) {
@@ -1406,7 +1747,7 @@ function checkAuth(req, res) {
 // ---------------------------------------------------------------- router
 const server = http.createServer(async (req, res) => {
   try {
-    if (!checkAuth(req, res)) return;
+    if (!req.url.startsWith('/api/worker/') && !checkAuth(req, res)) return;
     const u = new URL(req.url, 'http://x');
     const q = u.searchParams;
     const p = u.pathname;
@@ -1496,6 +1837,43 @@ const server = http.createServer(async (req, res) => {
         if (q.get('tag')) return sendJSON(res, await itemsWithTag(q.get('tag')));
         return sendJSON(res, await listTags());
       }
+      // ---- pessoas (administrador)
+      case '/api/people/status': await requireAdminGet(req); return sendJSON(res, await peopleStatus());
+      case '/api/people/names': await requireAdmin(req); return sendJSON(res, await nameSuggestions((await readBody(req)).scope || ''));
+      case '/api/people/apply': await requireAdmin(req); return sendJSON(res, await applySuggestions((await readBody(req)).pairs));
+      case '/api/people/clusters': await requireAdminGet(req); return sendJSON(res, { clusters: faceClusters().slice(0, 200) });
+      case '/api/people/suggestions': await requireAdminGet(req); return sendJSON(res, { suggestions: await faceSuggestions() });
+      case '/api/people/name': await requireAdmin(req); return sendJSON(res, await nameFaces(await readBody(req)));
+      case '/api/people/ignore': await requireAdmin(req); return sendJSON(res, await ignoreFaces(await readBody(req)));
+      case '/api/people/person': {
+        await requireAdminGet(req);
+        const t = q.get('tag') || '';
+        return sendJSON(res, { tag: t, faces: (peopleDb.refs[t] || []).filter((id) => faceById.has(id)).slice(0, 60) });
+      }
+      case '/api/people/unlink': {
+        await requireAdmin(req); const b = await readBody(req);
+        peopleDb.refs[b.tag] = (peopleDb.refs[b.tag] || []).filter((id) => !(b.faces || []).includes(id));
+        await savePeople(); return sendJSON(res, { ok: true });
+      }
+      case '/api/people/crop': {
+        await requireAdminGet(req);
+        const id = String(q.get('id') || '').replace(/[^a-f0-9]/g, '');
+        return await serveFile(req, res, path.join(PEOPLE_DIR, 'c', id.slice(0, 2), id + '.jpg'), { cache: true, immutable: true });
+      }
+      case '/api/people/worker-token': await requireAdmin(req); return sendJSON(res, await createWorkerToken((await readBody(req)).name));
+      case '/api/people/worker-revoke': await requireAdmin(req); return sendJSON(res, await revokeWorker((await readBody(req)).name));
+      case '/api/people/worker.zip': await requireAdminGet(req); return await sendWorkerZip(res);
+      case '/api/people/reanalyze': {
+        await requireAdmin(req); const b = await readBody(req);
+        for (const p of b.paths || []) { const r = relOf(resolveSafe(p)); fs.rm(videoFile(r), { force: true }, () => {}); indexFaces(r, null); workerFails.delete(r); }
+        if (b.failed) for (const [r, rec] of [...faceVideos]) if (rec.status === 'failed') { fs.rm(videoFile(r), { force: true }, () => {}); indexFaces(r, null); }
+        return sendJSON(res, { ok: true });
+      }
+      // ---- ajudante (PC)
+      case '/api/worker/hello': { const t = await requireWorker(req); return sendJSON(res, { ok: true, name: t.name }); }
+      case '/api/worker/job': await requireWorker(req); return sendJSON(res, await nextWorkerJob());
+      case '/api/worker/result': await requireWorker(req); return sendJSON(res, await workerResult(await readBody(req, 64 * 1024 * 1024)));
+      case '/api/worker/file': await requireWorker(req); return await serveFile(req, res, resolveSafe(q.get('path')));
       case '/api/favorites': {
         if (req.method === 'POST') return sendJSON(res, await setFavorite(q.get('path') || '', q.get('on') !== '0'));
         return sendJSON(res, await listFavorites());

@@ -1,0 +1,6 @@
+numpy
+opencv-python-headless
+requests
+imageio-ffmpeg
+onnxruntime-directml; sys_platform == "win32"
+onnxruntime; sys_platform != "win32"

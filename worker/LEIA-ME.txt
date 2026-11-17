@@ -1,0 +1,29 @@
+ZIMA VIDEO - AJUDANTE (reconhecimento facial no PC)
+====================================================
+
+O ajudante usa a placa de video do seu PC (AMD, NVIDIA ou Intel, via DirectML) para analisar os videos
+do Zima Video: encontra os rostos e manda ao servidor uma "assinatura" de cada rosto. O NAS so guarda e
+compara - o trabalho pesado fica no PC.
+
+INSTALAR (uma vez)
+ 1. Extraia esta pasta em um lugar fixo (ex.: Documentos\ZimaVideo-Ajudante).
+ 2. Abra "instalar.bat". Ele instala o Python (se precisar), as bibliotecas e baixa os modelos (~290 MB).
+ 3. Quando pedir, cole o ENDERECO e o CODIGO que aparecem no app:
+    menu (tres pontos) -> Pessoas -> Conectar ajudante.
+
+USAR
+ - Abra "iniciar.bat" e deixe a janela aberta (pode minimizar). Ele analisa os videos pendentes e,
+   quando termina, fica esperando videos novos.
+ - Para abrir sozinho junto com o Windows: "iniciar_com_o_windows.bat".
+ - Pode fechar a qualquer momento: os videos que faltam ficam esperando a proxima vez.
+
+DICAS
+ - Rede: o ajudante le so alguns trechos de cada video (nao baixa o arquivo inteiro).
+ - Sem placa de video compativel ele usa o processador (mais lento): iniciar.bat --cpu
+ - Reconfigurar endereco/codigo: iniciar.bat --setup
+
+PRIVACIDADE
+ - Tudo fica na sua rede: os rostos sao analisados no seu PC e guardados no seu NAS.
+ - O ajudante so reconhece pessoas que VOCE nomear no app; ele nao consulta nada na internet
+   (a internet so e usada para baixar os modelos na instalacao).
+ - Modelos: InsightFace "buffalo_l" (SCRFD + ArcFace), licenca de uso nao comercial.

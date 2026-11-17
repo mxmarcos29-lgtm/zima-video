@@ -7,6 +7,7 @@ RUN apk add --no-cache ffmpeg tini \
 WORKDIR /app
 COPY package.json server.js ./
 COPY public ./public
+COPY worker ./worker
 
 ENV MEDIA_ROOT=/media \
     CACHE_DIR=/cache \

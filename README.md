@@ -81,6 +81,22 @@ Se a reprodução direta falhar, o player tenta o próximo modo sozinho. No menu
 - Favoritos, tags e progresso acompanham arquivos renomeados ou movidos.
 - **Tags:** cada tag tem uma cor; marque em vários itens de uma vez (estado misto quando só parte tem a tag). Filtre a pasta atual pela barra de tags, ou abra uma tag (início, barra lateral) para ver os itens dela em todas as pastas. Renomear, mudar a cor ou excluir uma tag: ⋮ ao lado dela.
 
+## Pessoas (reconhecer atores/atrizes)
+
+Menu ⋮ → **Pessoas** (modo administrador). Só reconhece as pessoas que **você** nomeia — nada é consultado na internet.
+
+- **Pelo nome do arquivo:** procura o nome de cada pessoa (e apelidos) no nome dos vídeos, ignorando maiúsculas, acentos, pontos, traços e “_”. Também lista nomes que se repetem em vários arquivos para virar pessoa com um toque. Você confere e aplica as tags.
+- **Pelo rosto:** um **ajudante** roda no seu PC e usa a placa de vídeo (DirectML: AMD, NVIDIA ou Intel) para encontrar e comparar os rostos; o NAS só guarda os resultados. Os rostos parecidos aparecem em grupos: dê o nome uma vez e a pessoa passa a ser sugerida nos outros vídeos.
+- Qualquer tag pode ser marcada como **pessoa** (⋮ ao lado da tag → “É uma pessoa”, com outras formas do nome).
+
+### Instalar o ajudante no Windows
+1. No app: Pessoas → **Conectar ajudante** → *Baixar o ajudante (.zip)*.
+2. Extraia num lugar fixo e abra `instalar.bat` (instala o Python 3.12 e os componentes, e baixa os modelos ~290 MB na primeira vez).
+3. Informe o endereço e o código gerado no app.
+4. Use `iniciar.bat` (ou `iniciar_com_o_windows.bat` para abrir junto com o Windows).
+
+Os modelos de rosto (InsightFace buffalo_l) são de uso **não comercial**.
+
 ## Instalação no ZimaOS
 
 ### Opção 1 — Importar o compose (recomendado)
