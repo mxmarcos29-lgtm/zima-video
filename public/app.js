@@ -522,6 +522,18 @@ addEventListener('scroll', () => { if (!Search.open) store.set('scroll:' + B.pat
 $('#btn-up').onclick = () => B.load(dirname(B.path));
 $('#brand').onclick = () => B.load('');
 $('#btn-view').onclick = toggleView;
+// modo discreto: esconde as miniaturas (nem baixa as imagens) — a prévia em vídeo continua funcionando
+function setDiscreet(on, announce = true) {
+  prefs.discreet = on; savePrefs();
+  document.body.classList.toggle('discreet', on);
+  const b = $('#btn-discreet');
+  b.innerHTML = icon(on ? 'eye-off' : 'eye');
+  b.classList.toggle('on', on);
+  b.title = on ? 'Mostrar miniaturas (D)' : 'Modo discreto: esconder miniaturas (D)';
+  if (announce) toast(on ? 'Modo discreto: miniaturas escondidas' : 'Miniaturas visíveis', null, null, 1800);
+}
+$('#btn-discreet').onclick = () => setDiscreet(!prefs.discreet);
+setDiscreet(!!prefs.discreet, false);
 $('#btn-menu').onclick = browserMenu;
 
 // ===================================================================== pesquisa
@@ -1817,6 +1829,7 @@ document.addEventListener('keydown', (e) => {
   if (e.target.matches('input[type=search], input[type=text], textarea')) return;
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   if (e.key === '/' && P.state !== 'max' && !Gallery.open) { e.preventDefault(); Search.show(); return; }
+  if ((e.key === 'd' || e.key === 'D') && P.state !== 'max' && !Gallery.open && !Split.open) { e.preventDefault(); setDiscreet(!prefs.discreet); return; }
   if (!P.item) return;
   const k = e.key;
   const handled = {

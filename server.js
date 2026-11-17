@@ -747,6 +747,8 @@ async function loadTags() {
 }
 const saveTags = () => saveJSON(TAG_FILE, tagDb);
 const tagsOf = (rel) => (tagDb && tagDb.items[rel]) || undefined;
+const ptCollator = new Intl.Collator('pt-BR', { numeric: true, sensitivity: 'base' });
+const ptSort = (a, b) => ptCollator.compare(a, b);
 function cleanTagName(n) {
   n = String(n || '').replace(/\s+/g, ' ').trim().slice(0, 40);
   if (!n) throw new HttpError(400, 'Nome de tag vazio');
@@ -757,7 +759,7 @@ async function listTags() {
   const count = {};
   for (const list of Object.values(db.items)) for (const t of list) count[t] = (count[t] || 0) + 1;
   const tags = Object.entries(db.tags).map(([name, v]) => ({ name, color: v.color, count: count[name] || 0 }))
-    .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR', { sensitivity: 'base' }));
+    .sort((a, b) => ptSort(a.name, b.name));
   return { tags };
 }
 async function assignTags({ paths, add = [], remove = [] }) {
@@ -770,7 +772,7 @@ async function assignTags({ paths, add = [], remove = [] }) {
     if (!(await statSafe(path.join(ROOT, rel)))) continue;
     const set = new Set(db.items[rel] || []);
     add.forEach((t) => set.add(t)); remove.forEach((t) => set.delete(t));
-    if (set.size) db.items[rel] = [...set].sort(); else delete db.items[rel];
+    if (set.size) db.items[rel] = [...set].sort(ptSort); else delete db.items[rel];
   }
   await saveTags();
   return listTags();
@@ -788,7 +790,7 @@ async function editTag({ name, newName, color, remove }) {
       const nn = cleanTagName(newName);
       if (db.tags[nn]) throw new HttpError(409, 'Já existe uma tag com esse nome');
       db.tags[nn] = db.tags[name]; delete db.tags[name];
-      for (const [k, list] of Object.entries(db.items)) db.items[k] = [...new Set(list.map((t) => (t === name ? nn : t)))].sort();
+      for (const [k, list] of Object.entries(db.items)) db.items[k] = [...new Set(list.map((t) => (t === name ? nn : t)))].sort(ptSort);
     }
   }
   await saveTags();

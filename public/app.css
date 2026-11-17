@@ -736,3 +736,15 @@ body.selecting #list .item { cursor: pointer; }
 .rn-row.err .rn-new { color: var(--danger); }
 .rn-err { grid-column: 3; font-size: 11.5px; color: var(--danger); margin-top: -4px; }
 @media (max-width: 520px) { .rn-field span { width: 92px; } .rn-row { font-size: 12.5px; } }
+
+/* busca/criação na janela de tags */
+.tag-create { color: var(--accent-2); font-weight: 600; }
+.tag-create svg { color: var(--accent-2); }
+.tag-hint { padding-top: 0; }
+
+/* modo discreto: miniaturas viram ícones; o vídeo da prévia (video.pv) continua aparecendo por cima */
+body.discreet .thumb img, body.discreet .audio-art img { display: none !important; }
+body.discreet .thumb { background: var(--surface-2); }
+body.discreet .item.video .thumb svg, body.discreet .item.image .thumb svg, body.discreet .card .thumb svg { width: 34px; height: 34px; opacity: .55; }
+#btn-discreet.on { color: var(--accent-2); }
+@media (min-width: 1000px) { .sheet.move-sheet-open { height: min(78vh, 620px); } }

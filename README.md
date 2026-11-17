@@ -27,6 +27,7 @@ Navegue pelas pastas do servidor até o vídeo e assista direto no navegador, co
 - Miniaturas geradas automaticamente a partir do vídeo
 - Prévia em vídeo nas miniaturas (estilo YouTube): no celular a miniatura no centro da tela toca sozinha ao parar de rolar; no computador, ao passar o mouse. Pode ser desligada no menu ⋮ (e é desligada automaticamente com "economia de dados" ativada)
 - Pesquisa por nome em todas as pastas ou só na pasta atual (ignora acentos)
+- **Modo discreto** (botão de olho no topo ou tecla `D`): esconde as miniaturas sem baixá-las; a prévia em vídeo continua funcionando ao passar o mouse/arrastar o dedo
 - Favoritos: pastas e arquivos favoritos aparecem no topo do início (salvos no servidor, iguais em todos os aparelhos). Favorite pelo menu ⋮ do item, pelo menu do topo (pasta atual) ou pelo botão no player
 - Pressionar e segurar um item: favoritar, baixar, copiar link, reproduzir do início, marcar como assistido
 - Visualizador de fotos: deslizar para a próxima/anterior, pinça ou toque duplo para zoom (roda do mouse no PC), arrastar para baixo para fechar, apresentação automática; no PC `←`/`→`, `+`/`-`, `0`, espaço

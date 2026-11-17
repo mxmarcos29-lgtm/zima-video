@@ -17,14 +17,15 @@ const Tags = {
   async load() {
     try { const r = await api('tags'); this.apply(r); } catch { /* sem tags */ }
   },
+  sortNames(arr) { return arr.slice().sort((a, b) => collator.compare(a, b)); },
   apply(r) {
-    this.list = r.tags || [];
+    this.list = (r.tags || []).slice().sort((a, b) => collator.compare(a.name, b.name));
     this.colors = Object.fromEntries(this.list.map((t) => [t.name, t.color]));
     for (const f of [...this.filter]) if (!this.colors[f]) this.filter.delete(f);
     Side.render();
   },
   chip(name, extra = '') { return `<span class="tag ${extra}" style="--c:${this.colors[name] || '#888'}">${esc(name)}</span>`; },
-  chips(tags) { return tags && tags.length ? `<div class="item-tags">${tags.map((t) => this.chip(t)).join('')}</div>` : ''; },
+  chips(tags) { return tags && tags.length ? `<div class="item-tags">${this.sortNames(tags).map((t) => this.chip(t)).join('')}</div>` : ''; },
 
   // filtro na pasta atual: mostra só itens com alguma das tags marcadas
   applyFilter(entries) {
@@ -103,15 +104,15 @@ const Tags = {
   },
 
   // marcar tags em vários itens de uma vez (estado misto quando só parte dos itens tem a tag)
+  // marcar tags em vários itens de uma vez (estado misto quando só parte dos itens tem a tag).
+  // Um campo só: digita para filtrar; se não existir, oferece criar. A janela não é redesenhada a cada
+  // toque (só a lista), então o campo não perde o foco.
   editFor(items, done) {
     const paths = items.map((i) => i.path);
-    const state = () => {
-      const m = {};
-      for (const t of this.list) {
-        const n = items.filter((i) => (i.tags || []).includes(t.name)).length;
-        m[t.name] = n === 0 ? 'off' : n === items.length ? 'on' : 'mixed';
-      }
-      return m;
+    let q = ''; let ui = null;
+    const state = (name) => {
+      const n = items.filter((i) => (i.tags || []).includes(name)).length;
+      return n === 0 ? 'off' : n === items.length ? 'on' : 'mixed';
     };
     const apply = async (add, remove) => {
       try {
@@ -119,35 +120,60 @@ const Tags = {
         this.apply(r);
         for (const i of items) {
           const set = new Set(i.tags || []); add.forEach((t) => set.add(t)); remove.forEach((t) => set.delete(t));
-          i.tags = [...set].sort();
+          i.tags = this.sortNames([...set]);
         }
-        draw();
+        renderList();
       } catch (e) { toast(e.message); }
     };
-    const draw = () => Sheet.open((b) => {
-      Sheet.header(b, items.length > 1 ? `Tags de ${items.length} itens` : 'Tags');
-      const st = state();
-      for (const t of this.list) {
-        const r = el('button', 'row tag-row ' + st[t.name]);
-        r.innerHTML = `<span class="tri"></span><i class="tag-dot" style="background:${t.color}"></i><span class="lbl">${esc(t.name)}</span><span class="val">${t.count}</span>`;
-        r.onclick = () => (st[t.name] === 'on' ? apply([], [t.name]) : apply([t.name], []));
-        const more = el('span', 'icon-btn tag-more', icon('more'));
-        more.onclick = (ev) => { ev.stopPropagation(); this.manage(t, draw); };
-        r.appendChild(more);
-        b.appendChild(r);
+    const toggle = (name) => (state(name) === 'on' ? apply([], [name]) : apply([name], []));
+    const renderList = () => {
+      const box = ui.list; box.innerHTML = '';
+      const ql = norm(q.trim());
+      const shown = ql ? this.list.filter((t) => norm(t.name).includes(ql)) : this.list;
+      const exact = this.list.some((t) => norm(t.name) === ql);
+      if (q.trim() && !exact) {
+        const c = el('button', 'row tag-create', `${icon('add')}<span class="lbl">Criar tag “${esc(q.trim())}”</span>`);
+        c.onclick = () => { const v = q.trim(); q = ''; ui.input.value = ''; apply([v], []); };
+        box.appendChild(c);
       }
-      const add = el('div', 'tag-new');
-      add.innerHTML = '<input type="text" maxlength="40" placeholder="Nova tag…" enterkeyhint="done"><button class="btn primary">Adicionar</button>';
-      const inp = $('input', add);
-      const go = () => { const v = inp.value.trim(); if (v) apply([v], []); };
-      $('button', add).onclick = go;
-      inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
-      b.appendChild(add);
-      b.appendChild(el('div', 'sheet-note', 'Toque numa tag para marcar ou desmarcar em todos os itens selecionados.'));
-      const ok = el('button', 'btn sheet-done', 'Concluído'); ok.onclick = () => { Sheet.close(); if (done) done(); };
-      b.appendChild(ok);
+      for (const t of shown) {
+        const r = el('button', 'row tag-row ' + state(t.name));
+        r.innerHTML = `<span class="tri"></span><i class="tag-dot" style="background:${t.color}"></i><span class="lbl">${esc(t.name)}</span><span class="val">${t.count}</span>`;
+        r.onclick = () => toggle(t.name);
+        const more = el('span', 'icon-btn tag-more', icon('more'));
+        more.onclick = (ev) => { ev.stopPropagation(); this.manage(t, () => this.editFor(items, done)); };
+        r.appendChild(more);
+        box.appendChild(r);
+      }
+      if (!shown.length && !q.trim()) box.appendChild(el('div', 'sheet-note', 'Nenhuma tag ainda. Digite um nome acima para criar.'));
+      if (!shown.length && q.trim() && exact) box.appendChild(el('div', 'sheet-note', 'Nenhuma tag encontrada.'));
+    };
+    Sheet.open((b) => {
+      b.classList.add('move-sheet');
+      const top = el('div', 'move-top');
+      const h = el('h3'); h.textContent = items.length > 1 ? `Tags de ${items.length} itens` : `Tags de “${items[0].name}”`;
+      const sb = el('div', 'move-search');
+      sb.innerHTML = `${icon('search')}<input type="search" maxlength="40" placeholder="Buscar ou criar tag…" autocomplete="off" enterkeyhint="done">`;
+      const input = $('input', sb);
+      input.addEventListener('input', () => { q = input.value; renderList(); });
+      input.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter') return;
+        e.preventDefault();
+        const v = q.trim(); if (!v) return;
+        const hit = this.list.find((t) => norm(t.name) === norm(v)) || this.list.find((t) => norm(t.name).includes(norm(v)));
+        if (hit) toggle(hit.name); else apply([v], []);
+        q = ''; input.value = ''; renderList();
+      });
+      top.append(h, sb, el('div', 'sheet-note tag-hint', 'Toque numa tag para marcar ou desmarcar em todos os itens. Enter marca a primeira encontrada ou cria uma nova.'));
+      const list = el('div', 'move-list');
+      const bar = el('div', 'move-actions');
+      const ok = el('button', 'btn primary', 'Concluído'); ok.onclick = () => { Sheet.close(); if (done) done(); };
+      bar.append(ok);
+      b.append(top, list, bar);
+      ui = { list, input };
+      renderList();
+      if (!IS_TOUCH) setTimeout(() => input.focus(), 60);
     });
-    draw();
   },
   manage(t, back) {
     Sheet.open((b) => {
