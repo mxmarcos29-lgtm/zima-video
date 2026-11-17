@@ -757,3 +757,8 @@ body.discreet .item.video .thumb svg, body.discreet .item.image .thumb svg, body
 .scrub-hint .sb-tile { width: 160px; }
 @media (hover: hover) and (pointer: fine) { .player:not(.fs) .seek-tooltip .sb-tile { width: 176px; } .seek-tooltip .sb-tile { width: 220px; } }
 img.sb-hide { display: none !important; }
+
+/* cor estável: tira o vídeo do plano de hardware do Chromium (só vídeos 100% opacos e sem efeitos vão para lá) */
+body.cf-light video { opacity: .999; }
+body.cf-strong video { filter: contrast(1.0001); opacity: .999; }
+body.cf-light .thumb video.pv.on, body.cf-strong .thumb video.pv.on { opacity: .999; }

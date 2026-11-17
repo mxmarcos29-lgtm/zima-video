@@ -99,6 +99,9 @@ const IS_APPLE = /iPad|iPhone|iPod/.test(UA) || (navigator.platform === 'MacInte
   (/Safari/.test(UA) && !/Chrome|Chromium|Android|Edg/.test(UA));
 const IS_TOUCH = matchMedia('(pointer: coarse)').matches;
 // navegador embutido em apps Android (WebView), como o do app ZimaOS: "; wv)" ou "Version/4.0 Chrome/…"
+// Chrome/Edge no Windows: ao tocar, o vídeo vai para um "plano de hardware" (MPO/DirectComposition) onde
+// o driver/Windows aplicam HDR automático e outros ajustes — em alguns monitores a cor muda ao começar.
+const IS_WIN_CHROMIUM = /Windows/.test(UA) && /Chrome\/|Edg\//.test(UA) && !/Firefox/.test(UA);
 const IS_WEBVIEW = /Android/.test(UA) && (/; wv\)/.test(UA) || /Version\/[\d.]+ Chrome\/[\d.]+ Mobile/.test(UA));
 
 // ===================================================================== camadas + histórico (botão voltar do Android)
@@ -513,6 +516,7 @@ function browserMenu() {
     Sheet.row(b, { ico: 'autoplay', label: 'Prévia em vídeo nas miniaturas', toggle: true, on: prefs.previews, onClick: (ev) => { prefs.previews = !prefs.previews; savePrefs(); ev.currentTarget.classList.toggle('on', prefs.previews); if (!prefs.previews) Preview.stop(); else Preview.refresh(); } });
     Sheet.row(b, { ico: prefs.view === 'grid' ? 'list' : 'grid', label: prefs.view === 'grid' ? 'Ver em lista' : 'Ver em grade', onClick: () => { toggleView(); Sheet.close(); } });
     Sheet.row(b, { ico: 'refresh', label: 'Atualizar pasta', onClick: () => { Sheet.close(); B.load(B.path, false); } });
+    Sheet.row(b, { ico: 'hq', label: 'Cor estável do vídeo', value: COLOR_MODES[prefs.colorFix || 'off'], chevron: true, onClick: () => colorMenu(browserMenu) });
     // andamento da preparação de miniaturas/prévias em segundo plano
     const pg = el('div', 'sheet-note hidden'); b.appendChild(pg);
     api('pregen').then((r) => {
@@ -528,6 +532,29 @@ addEventListener('scroll', () => { if (!Search.open) store.set('scroll:' + B.pat
 $('#btn-up').onclick = () => B.load(dirname(B.path));
 $('#brand').onclick = () => B.load('');
 $('#btn-view').onclick = toggleView;
+// cor estável: impede o Chromium de mandar o vídeo para o plano de hardware (só promove vídeos 100% opacos e
+// sem efeitos), então ele continua sendo desenhado pelo navegador com a mesma cor da página.
+//   off = desligado · light = opacidade 99,9% (invisível) · strong = filtro neutro (garante, usa um pouco mais de GPU)
+const COLOR_MODES = { off: 'Desligada', light: 'Leve', strong: 'Forte' };
+function setColorMode(m) {
+  if (!COLOR_MODES[m]) m = 'off';
+  prefs.colorFix = m; savePrefs();
+  document.body.classList.toggle('cf-light', m === 'light');
+  document.body.classList.toggle('cf-strong', m === 'strong');
+}
+function colorMenu(back) {
+  Sheet.open((b) => {
+    Sheet.header(b, 'Cor estável do vídeo', back);
+    b.appendChild(el('div', 'sheet-note', 'Em alguns monitores (principalmente com HDR do Windows ligado, no Chrome/Edge) a cor do vídeo muda quando ele começa a tocar — o navegador passa o vídeo para um plano de hardware onde o driver altera as cores. Esta opção mantém o vídeo desenhado pelo navegador, com a cor da página.'));
+    for (const [k, label] of Object.entries(COLOR_MODES)) {
+      const desc = { off: 'Comportamento padrão do navegador', light: 'Opacidade 99,9% — invisível, resolve na maioria dos casos', strong: 'Filtro neutro — use se o Leve não resolver (um pouco mais de GPU)' }[k];
+      Sheet.row(b, { label: `${label} — ${desc}`, sel: (prefs.colorFix || 'off') === k, onClick: () => { setColorMode(k); colorMenu(back); } });
+    }
+    b.appendChild(el('div', 'sheet-note', 'Com a cor estável ligada, realces de vídeo do driver (ex.: RTX Video Super Resolution/HDR da NVIDIA) deixam de ser aplicados.'));
+  });
+}
+setColorMode(prefs.colorFix || (IS_WIN_CHROMIUM ? 'light' : 'off'));
+
 // modo discreto: esconde as miniaturas (nem baixa as imagens) — a prévia em vídeo continua funcionando
 function setDiscreet(on, announce = true) {
   prefs.discreet = on; savePrefs();
@@ -1508,6 +1535,7 @@ function settingsMenu() {
       Sheet.row(b, { ico: 'audio', label: 'Faixa de áudio', value: audioLabel(a), chevron: true, onClick: audio });
     }
     Sheet.row(b, { ico: 'autoplay', label: 'Reprodução automática', toggle: true, on: prefs.autoplay, onClick: (e) => { prefs.autoplay = !prefs.autoplay; savePrefs(); e.currentTarget.classList.toggle('on', prefs.autoplay); } });
+    Sheet.row(b, { ico: 'hq', label: 'Cor estável', value: COLOR_MODES[prefs.colorFix || 'off'], chevron: true, onClick: () => colorMenu(main) });
     Sheet.row(b, { ico: 'repeat', label: 'Repetir', toggle: true, on: prefs.loop, onClick: (e) => { prefs.loop = !prefs.loop; savePrefs(); e.currentTarget.classList.toggle('on', prefs.loop); } });
     if (info.video) Sheet.row(b, { ico: 'split', label: 'Abrir na tela dividida', onClick: () => {
       Sheet.close(); const it = P.item; const at = P.time();
