@@ -1147,6 +1147,7 @@ async function fsAction(action, body) {
     switch (action) {
       case 'mkdir': {
         const dir = resolveSafe(body.path || '');
+        if (dir === ROOT) throw new HttpError(400, 'Crie a pasta dentro de um volume (DATA, Discos…)');
         const name = validName(body.name);
         await fsp.mkdir(path.join(dir, name));
         return { ok: true, path: relOf(path.join(dir, name)) };
@@ -1206,6 +1207,8 @@ async function fsAction(action, body) {
         const dest = resolveSafe(body.dest || '');
         const ds = await statSafe(dest);
         if (!ds || !ds.isDirectory()) throw new HttpError(400, 'Pasta de destino inválida');
+        // ROOT só contém os volumes (DATA, Discos…): algo movido para lá ficaria no contêiner e se perderia
+        if (dest === ROOT) throw new HttpError(400, 'Escolha uma pasta dentro de um volume (DATA, Discos…)');
         const moved = []; const errors = [];
         for (const rel of body.paths || []) {
           try {

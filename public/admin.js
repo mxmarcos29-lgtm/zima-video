@@ -539,8 +539,14 @@ const Admin = {
       const box = ui.list; box.innerHTML = '';
       const ql = norm(q.trim());
       const local = ql ? dirs.filter((d) => norm(d.name).includes(ql)) : dirs;
+      // sair da pasta: linha "Pasta acima" no topo (sem pesquisa ativa)
+      if (cur && !ql) {
+        const up = el('button', 'row move-up', `${icon('back')}<span class="lbl">Pasta acima</span><span class="val">${esc(basename(dirname(cur)) || 'Início')}</span>`);
+        up.onclick = () => go(dirname(cur));
+        box.appendChild(up);
+      }
       // pesquisou um nome que não existe aqui: oferece criar a pasta com esse nome (e já entra nela)
-      if (ql && !dirs.some((d) => norm(d.name) === ql)) {
+      if (ql && cur && !dirs.some((d) => norm(d.name) === ql)) {
         const c = el('button', 'row tag-create', `${icon('add')}<span class="lbl">Criar pasta “${esc(q.trim())}” em ${esc(basename(cur) || 'Início')}</span>`);
         c.onclick = () => createHere(q.trim());
         box.appendChild(c);
@@ -562,14 +568,27 @@ const Admin = {
       } else if (!local.length) box.appendChild(el('div', 'sheet-note', ql ? 'Nenhuma subpasta com esse nome aqui — pesquisando em todas…' : 'Nenhuma subpasta aqui.'));
     };
     const renderTop = () => {
-      ui.path.innerHTML = `${icon('folder')}<span>${esc(cur || 'Início')}</span>`;
+      // caminho clicável: Início › Admin › Séries (toque numa parte para ir até ela)
+      ui.path.innerHTML = icon('folder');
+      const parts = cur ? cur.split('/') : [];
+      const crumb = (label, p, last) => {
+        const b = el('button', 'move-crumb' + (last ? ' cur' : ''), esc(label));
+        b.onclick = () => { if (!last) go(p); };
+        ui.path.appendChild(b);
+      };
+      crumb('Início', '', !parts.length);
+      parts.forEach((name, i) => { ui.path.appendChild(el('span', 'move-sep', '›')); crumb(name, parts.slice(0, i + 1).join('/'), i === parts.length - 1); });
+      requestAnimationFrame(() => { ui.path.scrollLeft = ui.path.scrollWidth; });
       ui.back.classList.toggle('hidden', !cur);
       ui.rec.innerHTML = '';
       const rs = recents();
       ui.rec.classList.toggle('hidden', !rs.length);
       if (rs.length) ui.rec.appendChild(el('span', 'move-rec-l', 'Recentes'));
       for (const p of rs) { const c = el('button', 'chip', esc(basename(p) || 'Início')); c.title = p; c.onclick = () => go(p); ui.rec.appendChild(c); }
-      ui.ok.textContent = `Mover para ${cur ? '“' + basename(cur) + '”' : 'Início'}`;
+      if (ui.nf) ui.nf.disabled = !cur;
+      // o Início não é uma pasta de verdade (fica fora dos volumes): escolha uma pasta dentro de um volume
+      ui.ok.disabled = !cur || paths.every((x) => dirname(x) === cur);
+      ui.ok.textContent = !cur ? 'Escolha uma pasta' : paths.every((x) => dirname(x) === cur) ? 'Já está aqui' : `Mover para “${basename(cur)}”`;
     };
     const go = async (p) => {
       cur = p; q = ''; found = null; ui.input.value = '';
@@ -636,7 +655,7 @@ const Admin = {
       };
       bar.append(nf, ok);
       b.append(top, list, bar);
-      ui = { path, back, rec, list, input, ok };
+      ui = { path, back, rec, list, input, ok, nf };
       go(cur);
       if (!IS_TOUCH) setTimeout(() => input.focus(), 60);
     }));

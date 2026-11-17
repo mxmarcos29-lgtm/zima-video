@@ -762,3 +762,13 @@ img.sb-hide { display: none !important; }
 body.cf-light video { opacity: .999; }
 body.cf-strong video { filter: contrast(1.0001); opacity: .999; }
 body.cf-light .thumb video.pv.on, body.cf-strong .thumb video.pv.on { opacity: .999; }
+
+.move-path { overflow-x: auto; scrollbar-width: none; white-space: nowrap; }
+.move-path::-webkit-scrollbar { display: none; }
+.move-crumb { flex: none; padding: 4px 6px; border-radius: 6px; color: var(--accent-2); font-size: 13.5px; }
+.move-crumb:hover { background: rgba(255,255,255,.08); }
+.move-crumb.cur { color: var(--text); font-weight: 600; cursor: default; }
+.move-sep { color: var(--muted); }
+.move-up { color: var(--muted); }
+.move-up .lbl { color: var(--text); }
+.move-actions .btn:disabled { opacity: .45; }
