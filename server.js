@@ -8,6 +8,7 @@ const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
 const crypto = require('crypto');
+const zlib = require('zlib');
 const { spawn } = require('child_process');
 
 // ---------------------------------------------------------------- config
@@ -24,8 +25,11 @@ const AUTH_PASS = process.env.AUTH_PASS || '';
 const SHOW_HIDDEN = process.env.SHOW_HIDDEN === '1';
 const THUMBNAILS = process.env.THUMBNAILS !== '0';
 const PREVIEWS = process.env.PREVIEWS !== '0';
+// pré-geração em segundo plano: all = miniaturas + prévias + storyboards | thumbs = só miniaturas | off
+const PREGEN = (process.env.PREGEN || 'all').toLowerCase();
+const NICE = ['/usr/bin/nice', '/bin/nice'].find((f) => { try { fs.accessSync(f); return true; } catch { return false; } });
 const INDEX_TTL = parseInt(process.env.SEARCH_INDEX_TTL || '600', 10) * 1000;
-const SEG = 6; // duração dos segmentos HLS (s)
+const SEG = 4; // duração dos segmentos HLS (s): menor = conversão começa a tocar mais cedo
 const PUBLIC = path.join(__dirname, 'public');
 
 const EXT = {
@@ -58,6 +62,7 @@ const sha1 = (s) => crypto.createHash('sha1').update(s).digest('hex');
 fs.mkdirSync(path.join(CACHE, 'thumbs'), { recursive: true });
 fs.mkdirSync(path.join(CACHE, 'subs'), { recursive: true });
 fs.mkdirSync(path.join(CACHE, 'previews'), { recursive: true });
+fs.mkdirSync(path.join(CACHE, 'storyboards'), { recursive: true });
 fs.rmSync(path.join(CACHE, 'hls'), { recursive: true, force: true });
 fs.mkdirSync(path.join(CACHE, 'hls'), { recursive: true });
 
@@ -73,15 +78,20 @@ function resolveSafe(rel) {
 }
 const relOf = (abs) => path.relative(ROOT, abs).split(path.sep).join('/');
 
+const acceptsGzip = (req) => !!req && /\bgzip\b/.test(req.headers['accept-encoding'] || '');
 function sendJSON(res, obj, code = 200) {
-  const body = JSON.stringify(obj);
-  res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+  let body = Buffer.from(JSON.stringify(obj));
+  const headers = { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', Vary: 'Accept-Encoding' };
+  if (body.length > 1400 && acceptsGzip(res.req)) { body = zlib.gzipSync(body, { level: 6 }); headers['Content-Encoding'] = 'gzip'; }
+  headers['Content-Length'] = body.length;
+  res.writeHead(code, headers);
   res.end(body);
 }
 
-function run(cmd, args, { timeout = 120000, maxBuffer = 64 * 1024 * 1024 } = {}) {
+function run(cmd, args, { timeout = 120000, maxBuffer = 64 * 1024 * 1024, bg = false } = {}) {
   return new Promise((resolve, reject) => {
-    const p = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    // bg: tarefas de segundo plano rodam com prioridade mínima de CPU (nice 19)
+    const p = bg && NICE ? spawn(NICE, ['-n', '19', cmd, ...args], { stdio: ['ignore', 'pipe', 'pipe'] }) : spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
     const out = []; let size = 0; let err = '';
     const timer = setTimeout(() => p.kill('SIGKILL'), timeout);
     p.stdout.on('data', (d) => { size += d.length; if (size <= maxBuffer) out.push(d); });
@@ -218,6 +228,16 @@ async function search(q, scope, mediaOnly) {
 
 // ---------------------------------------------------------------- probe
 const probeCache = new Map();
+// cache de informações dos vídeos salvo em disco: depois de reiniciar não precisa rodar ffprobe de novo
+const PROBE_FILE = path.join(CACHE, 'probe-cache.json');
+let probeDirty = false;
+try { for (const [k, v] of Object.entries(JSON.parse(fs.readFileSync(PROBE_FILE, 'utf8')))) probeCache.set(k, v); } catch { /* sem cache */ }
+setInterval(() => {
+  if (!probeDirty) return;
+  probeDirty = false;
+  const obj = Object.fromEntries([...probeCache.entries()].slice(-20000));
+  fs.writeFile(PROBE_FILE + '.tmp', JSON.stringify(obj), (e) => { if (!e) fs.rename(PROBE_FILE + '.tmp', PROBE_FILE, () => {}); });
+}, 30000).unref();
 
 async function probe(abs) {
   const st = await statSafe(abs);
@@ -262,8 +282,8 @@ async function probe(abs) {
         start: parseFloat(v.start_time || (j.format && j.format.start_time) || 0) || 0 } : null,
       audio, subs,
     };
-    probeCache.set(key, info);
-    if (probeCache.size > 2000) probeCache.delete(probeCache.keys().next().value);
+    probeCache.set(key, info); probeDirty = true;
+    if (probeCache.size > 20000) probeCache.delete(probeCache.keys().next().value);
     return info;
   });
 }
@@ -286,14 +306,15 @@ async function sidecarSubs(abs) {
 }
 
 // ---------------------------------------------------------------- streaming (arquivo original)
-async function serveFile(req, res, abs, { download = false, cache = false } = {}) {
+async function serveFile(req, res, abs, { download = false, cache = false, immutable = false } = {}) {
   const st = await statSafe(abs);
   if (!st || !st.isFile()) throw new HttpError(404, 'Arquivo não encontrado');
   const type = MIME[extOf(abs)] || 'application/octet-stream';
   const headers = {
     'Content-Type': type, 'Accept-Ranges': 'bytes',
     'Last-Modified': new Date(st.mtimeMs).toUTCString(),
-    'Cache-Control': cache ? 'public, max-age=86400' : 'private, max-age=0, must-revalidate',
+    // imutável: a URL traz a data do arquivo (v=…), então o navegador nunca precisa perguntar de novo
+    'Cache-Control': immutable ? 'public, max-age=31536000, immutable' : cache ? 'public, max-age=86400' : 'private, max-age=0, must-revalidate',
   };
   if (download) headers['Content-Disposition'] = `attachment; filename*=UTF-8''${encodeURIComponent(path.basename(abs))}`;
   const range = req.headers.range;
@@ -312,7 +333,9 @@ async function serveFile(req, res, abs, { download = false, cache = false } = {}
   if (req.method === 'HEAD') return res.end();
   const stream = fs.createReadStream(abs, { start, end, highWaterMark: 256 * 1024 });
   stream.pipe(res);
-  res.on('close', () => stream.destroy());
+  const media = /^(video|audio)\//.test(type) && end - start > 4 * 1024 * 1024;
+  if (media) activeStreams++;
+  res.on('close', () => { stream.destroy(); if (media) activeStreams--; });
 }
 
 // ---------------------------------------------------------------- transcodificação
@@ -411,7 +434,8 @@ async function serveProgressive(req, res, abs, q) {
     });
   };
   start(mode === 'transcode' ? HWACCEL : 'none');
-  res.on('close', () => { closed = true; if (proc) proc.kill('SIGKILL'); });
+  activeStreams++;
+  res.on('close', () => { closed = true; activeStreams--; if (proc) proc.kill('SIGKILL'); });
 }
 
 /** Tempo do keyframe imediatamente anterior a t (onde um remux com -c:v copy realmente começa). */
@@ -552,7 +576,7 @@ setInterval(() => {
 }, 30000).unref();
 
 // ---------------------------------------------------------------- miniaturas
-async function thumbnail(abs, t, width) {
+async function thumbnail(abs, t, width, { bg = false } = {}) {
   const st = await statSafe(abs);
   if (!st || !st.isFile()) throw new HttpError(404, 'Arquivo não encontrado');
   const key = sha1(`${abs}|${st.size}|${st.mtimeMs}|${t}|${width}`);
@@ -572,10 +596,15 @@ async function thumbnail(abs, t, width) {
     } else at = Math.max(0, parseFloat(t) || 0);
     const tmp = out + '.' + process.pid + '.tmp.jpg';
     // sem -ss quando é 0: o leitor de JPEG do ffmpeg não gera nada com -ss (nem -ss 0)
-    const attempt = (ss) => run(FFMPEG, ['-hide_banner', '-loglevel', 'error', '-nostdin', ...(ss > 0 ? ['-ss', ss.toFixed(2)] : []), '-i', abs,
-      '-map', '0:v:0', '-frames:v', '1', '-vf', `scale=${width}:-2:flags=bilinear`, '-q:v', t === 'auto' ? '4' : '7', '-y', tmp], { timeout: 30000 });
+    const isImg = typeOf(abs) === 'image';
+    // vídeo: decodifica só o quadro-chave mais próximo (~40% mais rápido; para miniatura não precisa ser exato)
+    const fast = isImg ? [] : ['-skip_frame', 'nokey', '-noaccurate_seek'];
+    let useFast = true;
+    const attempt = (ss) => run(FFMPEG, ['-hide_banner', '-loglevel', 'error', '-nostdin', ...(useFast ? fast : []), ...(ss > 0 ? ['-ss', ss.toFixed(2)] : []), '-i', abs,
+      '-map', '0:v:0', '-frames:v', '1', '-vf', `scale=${width}:-2:flags=bilinear`, '-q:v', t === 'auto' ? '4' : '7', '-y', tmp], { timeout: 30000, bg });
     try {
-      await attempt(at);
+      await attempt(at).catch(() => {});
+      if (!(await exists(tmp))) { useFast = false; await attempt(at).catch(() => {}); } // sem quadro-chave útil: modo exato
       if (!(await exists(tmp))) await attempt(0);
       if (!(await exists(tmp))) throw new Error('sem frame');
       await fsp.rename(tmp, out);
@@ -593,7 +622,7 @@ async function thumbnail(abs, t, width) {
  * Clipe curto e mudo (≈10s) com trechos de vários pontos do vídeo, em 16:9 pequeno.
  * Gerado uma vez e guardado no cache.
  */
-async function previewClip(abs) {
+async function previewClip(abs, { bg = false } = {}) {
   const st = await statSafe(abs);
   if (!st || !st.isFile()) throw new HttpError(404, 'Arquivo não encontrado');
   const key = sha1(`${abs}|${st.size}|${st.mtimeMs}|pv1`);
@@ -622,7 +651,7 @@ async function previewClip(abs) {
     args.push('-filter_complex', filter, '-map', '[out]', '-an', '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '30',
       '-profile:v', 'main', '-level', '3.1', '-movflags', '+faststart', '-y', tmp);
     try {
-      await run(FFMPEG, args, { timeout: 120000 });
+      await run(FFMPEG, args, { timeout: 120000, bg });
       await fsp.rename(tmp, out);
       return out;
     } catch (e) {
@@ -632,6 +661,88 @@ async function previewClip(abs) {
       throw new HttpError(404, 'Sem prévia');
     }
   }));
+}
+
+// ---------------------------------------------------------------- storyboard (prévia da barra de progresso)
+// Folhas de 10×10 miniaturas (160×90) cobrindo o vídeo todo, geradas de uma vez lendo só os quadros-chave.
+// Com elas a prévia ao arrastar a barra é instantânea (antes: um ffmpeg por posição).
+const sbQueue = makeQueue(1, 6);
+const SB = { cols: 10, rows: 10, w: 160, h: 90 };
+async function storyboardInfo(abs) {
+  const st = await statSafe(abs);
+  if (!st || !st.isFile()) throw new HttpError(404, 'Arquivo não encontrado');
+  const key = sha1(`${abs}|${st.size}|${st.mtimeMs}|sb1`);
+  return { key, dir: path.join(CACHE, 'storyboards', key.slice(0, 2), key) };
+}
+async function storyboard(abs, { bg = false, wait = true } = {}) {
+  const { key, dir } = await storyboardInfo(abs);
+  const meta = path.join(dir, 'meta.json');
+  const done = await loadJSON(meta, null);
+  if (done) return done;
+  if (await exists(dir + '.fail')) return { ready: false, failed: true };
+  const job = once('sb:' + key, () => sbQueue(async () => {
+    const info = await probe(abs);
+    if (!info.video || !info.duration) throw new HttpError(404, 'Sem vídeo');
+    const interval = Math.max(2, info.duration / 240); // até 240 quadros (3 folhas)
+    const tmp = dir + '.tmp' + process.pid;
+    await fsp.rm(tmp, { recursive: true, force: true });
+    await fsp.mkdir(tmp, { recursive: true });
+    try {
+      await run(FFMPEG, ['-hide_banner', '-loglevel', 'error', '-nostdin', '-skip_frame', 'nokey', '-i', abs, '-map', '0:v:0', '-an', '-sn',
+        '-vf', `fps=1/${interval.toFixed(3)},scale=${SB.w}:${SB.h}:force_original_aspect_ratio=decrease:flags=fast_bilinear,pad=${SB.w}:${SB.h}:(ow-iw)/2:(oh-ih)/2,tile=${SB.cols}x${SB.rows}`,
+        '-q:v', '5', '-y', path.join(tmp, 'sb_%d.jpg')], { timeout: 15 * 60000, bg });
+      const sheets = (await fsp.readdir(tmp)).filter((n) => /^sb_\d+\.jpg$/.test(n)).length;
+      if (!sheets) throw new Error('sem quadros');
+      const m = { ready: true, interval, count: Math.ceil(info.duration / interval), sheets, ...SB, v: key.slice(0, 12) };
+      await fsp.writeFile(path.join(tmp, 'meta.json'), JSON.stringify(m));
+      await fsp.rm(dir, { recursive: true, force: true });
+      await fsp.mkdir(path.dirname(dir), { recursive: true });
+      await fsp.rename(tmp, dir);
+      return m;
+    } catch (e) {
+      await fsp.rm(tmp, { recursive: true, force: true }).catch(() => {});
+      if (!(e instanceof HttpError && e.code === 503)) await fsp.writeFile(dir + '.fail', String(e.message)).catch(() => {});
+      throw e;
+    }
+  }));
+  if (!wait) { job.catch(() => {}); return { ready: false }; }
+  return job;
+}
+
+// ---------------------------------------------------------------- pré-geração em segundo plano
+// Percorre a biblioteca e deixa miniaturas, prévias e storyboards prontos, com prioridade mínima de CPU.
+// Pausa enquanto alguém assiste ou navega (pedidos recentes), para não disputar disco/CPU.
+let activeStreams = 0;          // vídeos sendo transmitidos agora
+let lastUserActivity = 0;       // último pedido de miniatura/prévia/storyboard vindo de um usuário
+const pregen = { enabled: PREGEN !== 'off', running: false, total: 0, done: 0, current: '', last: 0 };
+const isBusy = () => activeStreams > 0 || [...hlsJobs.values()].some((j) => j.proc) || Date.now() - lastUserActivity < 8000;
+async function pregenPass() {
+  if (!pregen.enabled || pregen.running) return;
+  pregen.running = true;
+  try {
+    const idx = await getIndex();
+    const vids = idx.filter((it) => it.t === 'video' || (it.t === 'image' && THUMBNAILS));
+    pregen.total = vids.length; pregen.done = 0;
+    for (const it of vids) {
+      while (isBusy()) await new Promise((r) => setTimeout(r, 5000));
+      const abs = path.join(ROOT, it.p);
+      pregen.current = it.p;
+      try {
+        if (THUMBNAILS) await thumbnail(abs, 'auto', 320, { bg: true });
+        if (it.t === 'video' && PREGEN === 'all') {
+          if (PREVIEWS) await previewClip(abs, { bg: true }).catch(() => {});
+          await storyboard(abs, { bg: true }).catch(() => {});
+        }
+      } catch { /* arquivo problemático: segue */ }
+      pregen.done++;
+    }
+  } finally {
+    pregen.running = false; pregen.current = ''; pregen.last = Date.now();
+  }
+}
+if (pregen.enabled) {
+  setTimeout(() => pregenPass().catch(() => {}), 45000).unref();
+  setInterval(() => pregenPass().catch(() => {}), 30 * 60000).unref(); // pega arquivos novos
 }
 
 // ---------------------------------------------------------------- legendas
@@ -1171,6 +1282,7 @@ async function fsAction(action, body) {
 }
 
 // ---------------------------------------------------------------- static
+const staticGz = new Map();
 async function serveStatic(req, res, pathname) {
   let rel = decodeURIComponent(pathname);
   if (rel === '/' || !path.extname(rel)) rel = '/index.html';
@@ -1180,10 +1292,21 @@ async function serveStatic(req, res, pathname) {
   if (!st || !st.isFile()) throw new HttpError(404, 'Não encontrado');
   const etag = `"${st.size.toString(16)}-${Math.floor(st.mtimeMs).toString(16)}"`;
   if (req.headers['if-none-match'] === etag) { res.writeHead(304); return res.end(); }
-  res.writeHead(200, {
-    'Content-Type': MIME[extOf(abs)] || 'application/octet-stream', 'Content-Length': st.size, ETag: etag,
+  const headers = {
+    'Content-Type': MIME[extOf(abs)] || 'application/octet-stream', ETag: etag, Vary: 'Accept-Encoding',
     'Cache-Control': abs.includes(`${path.sep}vendor${path.sep}`) ? 'public, max-age=604800' : 'no-cache',
-  });
+  };
+  // texto (js, css, html, svg): envia comprimido (gzip) e guarda a versão comprimida em memória
+  if (/^(js|css|html|svg|json|webmanifest)$/.test(extOf(abs)) && acceptsGzip(req)) {
+    const k = `${abs}|${st.mtimeMs}`;
+    let gz = staticGz.get(k);
+    if (!gz) { gz = zlib.gzipSync(await fsp.readFile(abs), { level: 9 }); staticGz.set(k, gz); }
+    headers['Content-Encoding'] = 'gzip'; headers['Content-Length'] = gz.length;
+    res.writeHead(200, headers);
+    return res.end(req.method === 'HEAD' ? undefined : gz);
+  }
+  headers['Content-Length'] = st.size;
+  res.writeHead(200, headers);
   if (req.method === 'HEAD') return res.end();
   fs.createReadStream(abs).pipe(res);
 }
@@ -1234,16 +1357,30 @@ const server = http.createServer(async (req, res) => {
       case '/api/hls/seg.ts': return await hlsSegment(req, res, q);
       case '/api/preview': {
         if (!PREVIEWS) throw new HttpError(404, 'Prévias desativadas');
+        lastUserActivity = Date.now();
         const file = await previewClip(resolveSafe(q.get('path')));
-        return await serveFile(req, res, file, { cache: true });
+        return await serveFile(req, res, file, { cache: true, immutable: !!q.get('v') });
       }
+      case '/api/storyboard': {
+        lastUserActivity = Date.now();
+        const abs = resolveSafe(q.get('path'));
+        if (q.get('n')) {
+          const { dir } = await storyboardInfo(abs);
+          const n = Math.max(1, parseInt(q.get('n'), 10) || 1);
+          return await serveFile(req, res, path.join(dir, `sb_${n}.jpg`), { cache: true, immutable: !!q.get('v') });
+        }
+        // primeira consulta: começa a gerar e responde na hora (o player pergunta de novo depois)
+        return sendJSON(res, await storyboard(abs, { wait: false }).catch(() => ({ ready: false, failed: true })));
+      }
+      case '/api/pregen': return sendJSON(res, { enabled: pregen.enabled, mode: PREGEN, running: pregen.running, total: pregen.total, done: pregen.done, current: pregen.current });
       case '/api/thumb': {
         if (!THUMBNAILS && !q.get('t')) throw new HttpError(404, 'Miniaturas desativadas');
         const abs = resolveSafe(q.get('path'));
         const t = q.get('t');
         const w = Math.min(640, Math.max(80, parseInt(q.get('w') || '320', 10) || 320));
+        lastUserActivity = Date.now();
         const file = await thumbnail(abs, t == null ? 'auto' : String(Math.round(parseFloat(t) / 5) * 5), w);
-        return await serveFile(req, res, file, { cache: true });
+        return await serveFile(req, res, file, { cache: true, immutable: !!q.get('v') });
       }
       case '/api/subtitle': {
         const vtt = await subtitle(q);

@@ -43,7 +43,8 @@ async function api(path, params = {}) {
   return j;
 }
 const fileUrl = (p, extra = {}) => `/api/file?${qs({ path: p, ...extra })}`;
-const thumbUrl = (p, t, w) => `/api/thumb?${qs({ path: p, t, w })}`;
+// v = data do arquivo: com ela o navegador guarda a imagem para sempre (o servidor manda cache imutável)
+const thumbUrl = (p, t, w, v) => `/api/thumb?${qs({ path: p, t, w, v: v ? Math.round(v).toString(36) : null })}`;
 
 const store = {
   get(k, d) { try { const v = localStorage.getItem('zv:' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
@@ -367,10 +368,10 @@ const B = {
   },
 };
 
-function loadThumb(img, p) {
+function loadThumb(img, p, v) {
   img.onload = () => img.classList.add('ok');
   img.onerror = () => img.remove();
-  img.src = thumbUrl(p);
+  img.src = thumbUrl(p, null, null, v);
 }
 
 function typeIcon(t) { return { dir: 'folder', video: 'video', audio: 'audio', image: 'image', subtitle: 'subtitle' }[t] || 'file'; }
@@ -380,7 +381,7 @@ function renderItem(e, { showPath = false, highlight = null } = {}) {
   li.dataset.path = e.path;
   const pr = progress[e.path];
   const ext = e.type !== 'dir' ? extname(e.name) : '';
-  let thumb = `<div class="thumb"${e.type === 'video' ? ` data-pv="${esc(e.path)}"` : ''}>${icon(typeIcon(e.type))}`;
+  let thumb = `<div class="thumb"${e.type === 'video' ? ` data-pv="${esc(e.path)}" data-pvv="${e.mtime ? Math.round(e.mtime).toString(36) : ''}"` : ''}>${icon(typeIcon(e.type))}`;
   if (e.type === 'video' || e.type === 'audio' || e.type === 'image') thumb += '<img alt="" loading="lazy" decoding="async">';
   if (e.type === 'video' && ext) thumb += `<span class="ext">${esc(ext)}</span>`;
   if (pr && pr.d) thumb += pr.w ? '<div class="prog" style="width:100%;opacity:.6"></div>' : `<div class="prog" style="width:${(pr.t / pr.d) * 100}%"></div>`;
@@ -401,8 +402,8 @@ function renderItem(e, { showPath = false, highlight = null } = {}) {
     `<button class="icon-btn item-more" aria-label="Mais opções">${icon('more')}</button>`;
   const img = $('img', li);
   if (img) {
-    if (e.type === 'image') { img.onload = () => img.classList.add('ok'); img.onerror = () => img.remove(); img.src = thumbUrl(e.path, null, 240); }
-    else loadThumb(img, e.path);
+    if (e.type === 'image') { img.onload = () => img.classList.add('ok'); img.onerror = () => img.remove(); img.src = thumbUrl(e.path, null, 240, e.mtime); }
+    else loadThumb(img, e.path, e.mtime);
   }
   li.onclick = (ev) => {
     if (!ev.target.closest('.item-more') && Admin.click(e, li, ev)) { ev.stopPropagation(); return; }
@@ -512,6 +513,11 @@ function browserMenu() {
     Sheet.row(b, { ico: 'autoplay', label: 'Prévia em vídeo nas miniaturas', toggle: true, on: prefs.previews, onClick: (ev) => { prefs.previews = !prefs.previews; savePrefs(); ev.currentTarget.classList.toggle('on', prefs.previews); if (!prefs.previews) Preview.stop(); else Preview.refresh(); } });
     Sheet.row(b, { ico: prefs.view === 'grid' ? 'list' : 'grid', label: prefs.view === 'grid' ? 'Ver em lista' : 'Ver em grade', onClick: () => { toggleView(); Sheet.close(); } });
     Sheet.row(b, { ico: 'refresh', label: 'Atualizar pasta', onClick: () => { Sheet.close(); B.load(B.path, false); } });
+    // andamento da preparação de miniaturas/prévias em segundo plano
+    const pg = el('div', 'sheet-note hidden'); b.appendChild(pg);
+    api('pregen').then((r) => {
+      if (r.enabled && r.running && r.total) { pg.textContent = `Preparando miniaturas e prévias em segundo plano: ${r.done} de ${r.total}`; pg.classList.remove('hidden'); }
+    }).catch(() => {});
     Admin.menuRows(b);
     Sheet.row(b, { ico: 'search', label: 'Reindexar pesquisa', onClick: async () => { Sheet.close(); toast('Reindexando…'); try { const r = await api('reindex'); toast(`${r.count.toLocaleString('pt-BR')} itens indexados`); } catch (e) { toast(e.message); } } });
   });
@@ -611,6 +617,7 @@ function parseVTT(text) {
 // ===================================================================== prévia em vídeo nas miniaturas (estilo YouTube)
 // Celular: a miniatura mais centralizada toca sozinha quando a rolagem para.
 // Desktop: toca ao passar o mouse.
+const previewUrl = (thumb) => `/api/preview?${qs({ path: thumb.dataset.pv, v: thumb.dataset.pvv || null })}`;
 const Preview = {
   el: null, cur: null, timer: null, hoverTimer: null, failed: new Set(),
   get enabled() {
@@ -646,6 +653,15 @@ const Preview = {
     this.scrubFrac = null;
     this.el.play().catch(() => {});
   },
+  warmed: new Set(),
+  warm(thumb) {
+    // baixa a prévia antes de mostrar: quando o vídeo aparece, já está no cache do navegador
+    if (!prefs.previews || this.failed.has(thumb.dataset.pv)) return;
+    const url = previewUrl(thumb);
+    if (this.warmed.has(url)) return;
+    this.warmed.add(url);
+    fetch(url).then((r) => (r.ok ? r.blob() : Promise.reject())).catch(() => { this.warmed.delete(url); });
+  },
   start(thumb, force = false) {
     if (!thumb || this.cur === thumb || (!this.enabled && !force) || this.failed.has(thumb.dataset.pv)) return;
     this.stop();
@@ -655,7 +671,7 @@ const Preview = {
     thumb.appendChild(v);
     if (!thumb.querySelector('.pv-bar')) thumb.appendChild(el('div', 'pv-bar'));
     thumb.classList.add('previewing');
-    v.src = `/api/preview?${qs({ path: thumb.dataset.pv })}`;
+    v.src = previewUrl(thumb);
     v.play().catch(() => {});
   },
   stop() {
@@ -736,6 +752,7 @@ document.addEventListener('pointerover', (e) => {
   if (e.pointerType !== 'mouse') return;
   const t = e.target.closest && e.target.closest('.thumb[data-pv]');
   if (!t || t === Preview.cur) return;
+  Preview.warm(t);
   clearTimeout(Preview.hoverTimer);
   Preview.hoverTimer = setTimeout(() => Preview.start(t), 350);
 });
@@ -856,6 +873,7 @@ const P = {
     this.info = null; this.cues = null; this.subSel = null; this.triedModes = [];
     $('#subs').innerHTML = '';
     clearPreview($('#seek-img')); clearPreview($('#scrub-hint img'));
+    if (item.type !== 'audio') Storyboard.load(item); else Storyboard.path = null;
     this.showState('max');
     const title = item.type === 'video' ? stripExt(item.name) : item.name;
     $('#ctrl-title').textContent = title; $('#mini-title').textContent = title; $('#d-title').textContent = title;
@@ -883,7 +901,7 @@ const P = {
     $('#audio-art').classList.toggle('hidden', !!info.video);
     if (!info.video) {
       const art = $('#audio-art'); art.innerHTML = icon('audio');
-      const img = new Image(); img.onload = () => { art.innerHTML = ''; art.appendChild(img); }; img.src = thumbUrl(item.path, null, 640);
+      const img = new Image(); img.onload = () => { art.innerHTML = ''; art.appendChild(img); }; img.src = thumbUrl(item.path, null, 640, item.mtime);
     }
     // faixa de áudio preferida
     this.audio = 0;
@@ -1622,10 +1640,50 @@ function scrubSecondsPerPx() {
   const w = stage.getBoundingClientRect().width; const d = P.duration() || 600;
   return clamp(d / (w * 3), 0.1, 6);
 }
+// storyboard: folhas com miniaturas do vídeo todo (geradas pelo servidor). Quando prontas, a prévia
+// da barra de progresso é só um recorte da folha — instantânea, sem pedir nada ao servidor.
+const Storyboard = {
+  meta: null, path: null, tries: 0, timer: null,
+  load(item) {
+    clearTimeout(this.timer); this.meta = null; this.path = item.path; this.tries = 0;
+    this.ask();
+  },
+  async ask() {
+    const p = this.path; if (!p) return;
+    try {
+      const m = await api('storyboard', { path: p });
+      if (this.path !== p) return;
+      if (m.ready) {
+        this.meta = m;
+        for (let n = 1; n <= m.sheets; n++) { const im = new Image(); im.src = this.url(n); } // pré-carrega
+        return;
+      }
+      if (!m.failed && ++this.tries < 8) this.timer = setTimeout(() => this.ask(), Math.min(15000, 2000 * this.tries));
+    } catch { /* fica com a prévia quadro a quadro */ }
+  },
+  url(n) { return `/api/storyboard?${qs({ path: this.path, n, v: this.meta && this.meta.v })}`; },
+  // desenha o quadro do tempo t num elemento (recorte da folha via background-position)
+  paint(tile, t) {
+    const m = this.meta;
+    const i = Math.max(0, Math.min(m.count - 1, Math.floor(t / m.interval)));
+    const per = m.cols * m.rows; const sheet = Math.floor(i / per) + 1; const k = i % per;
+    const col = k % m.cols; const row = Math.floor(k / m.cols);
+    tile.style.backgroundImage = `url("${this.url(sheet)}")`;
+    tile.style.backgroundSize = `${m.cols * 100}% ${m.rows * 100}%`;
+    tile.style.backgroundPosition = `${(col / (m.cols - 1)) * 100}% ${(row / (m.rows - 1)) * 100}%`;
+  },
+};
 function setPreview(img, t) {
   // miniatura do frame na posição (arredondada a 5s, com throttle). A chave inclui o arquivo,
   // então nunca sobra imagem do vídeo anterior; cada <img> tem seu próprio estado.
   if (!P.item || !P.info || !P.info.video) { clearPreview(img); return; }
+  const tile = img.parentNode && img.parentNode.querySelector('.sb-tile');
+  if (tile && Storyboard.meta && Storyboard.path === P.item.path) {
+    tile.classList.add('on'); img.classList.add('sb-hide');
+    Storyboard.paint(tile, t);
+    return;
+  }
+  if (tile) { tile.classList.remove('on'); img.classList.remove('sb-hide'); }
   const r = Math.round(t / 5) * 5;
   const key = `${P.item.path}|${r}`;
   if (img.dataset.want === key) return;
@@ -1638,9 +1696,14 @@ function setPreview(img, t) {
     pre.src = url;
   }, 90);
 }
-function clearPreview(img) { clearTimeout(img._pvTimer); delete img.dataset.want; img.removeAttribute('src'); }
+function clearPreview(img) {
+  clearTimeout(img._pvTimer); delete img.dataset.want; img.removeAttribute('src');
+  const tile = img.parentNode && img.parentNode.querySelector('.sb-tile');
+  if (tile) { tile.classList.remove('on'); tile.style.backgroundImage = ''; img.classList.remove('sb-hide'); }
+}
 
 stage.addEventListener('pointerdown', (e) => {
+  if (e.pointerType !== 'mouse') stage.classList.remove('bar-hover'); // prévia de mouse não sobra em gestos de toque
   if (P.state !== 'max' || !P.item) return;
   if (e.target.closest('button, input, .seek, .upnext')) return;
   g.pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });

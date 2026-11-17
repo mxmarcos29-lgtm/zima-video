@@ -54,6 +54,12 @@ Se a reprodução direta falhar, o player tenta o próximo modo sozinho. No menu
 - **Modo teatro** (botão ▭ ou tecla `T`): o vídeo ocupa toda a janela, a lista vai para baixo.
 - **Tela dividida:** até 4 vídeos ao mesmo tempo. Abra pelo menu ⋮ de um vídeo → *Abrir na tela dividida*, pelo ⚙ do player ou pelo botão **+**. Clique num vídeo para ouvir o som dele, duplo clique amplia, teclas `1`–`4` selecionam.
 
+## Desempenho
+
+- **Pré-geração:** depois de iniciar, o servidor prepara miniaturas, prévias em vídeo e storyboards de toda a biblioteca em segundo plano (nice 19, pausa durante reprodução/navegação). O andamento aparece no menu ⋮. Primeira passada pode levar um tempo em bibliotecas grandes; arquivos novos são pegos a cada 30 min.
+- **Storyboard:** a prévia ao arrastar/passar o mouse na barra de progresso vem de folhas de miniaturas do vídeo todo — instantânea.
+- **Cache:** miniaturas, prévias e storyboards são guardados no navegador para sempre (a URL muda se o arquivo mudar); informações dos vídeos ficam salvas em disco; app e listas vão comprimidos (gzip).
+
 ## Gerenciar arquivos (modo administrador) e tags
 
 1. No app: menu ⋮ → **Criar senha de administrador** (só aparece enquanto não existe senha; depois vira **Entrar no modo administrador**). Para trocar: menu ⋮ → *Trocar senha de administrador*. Alternativa: definir a variável `ADMIN_PASSWORD` no app (tem prioridade).
@@ -121,6 +127,7 @@ Se a GPU falhar com algum arquivo, o servidor volta automaticamente para convers
 | `THUMBNAILS` | `1` | `0` desativa miniaturas automáticas |
 | `THUMB_CONCURRENCY` | `2` | Miniaturas geradas em paralelo |
 | `PREVIEWS` | `1` | `0` desativa as prévias em vídeo |
+| `PREGEN` | `all` | Prepara em segundo plano (prioridade mínima, pausa enquanto alguém assiste): `all` = miniaturas + prévias + storyboards, `thumbs` = só miniaturas, `off` = desligado |
 | `PREVIEW_CONCURRENCY` | `1` | Prévias geradas em paralelo |
 | `SEARCH_INDEX_TTL` | `600` | Segundos até reindexar a pesquisa |
 | `DATA_DIR` | `CACHE_DIR` | Onde ficam `favorites.json`, `tags.json` e `trash.json` |

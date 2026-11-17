@@ -748,3 +748,12 @@ body.discreet .thumb { background: var(--surface-2); }
 body.discreet .item.video .thumb svg, body.discreet .item.image .thumb svg, body.discreet .card .thumb svg { width: 34px; height: 34px; opacity: .55; }
 #btn-discreet.on { color: var(--accent-2); }
 @media (min-width: 1000px) { .sheet.move-sheet-open { height: min(78vh, 620px); } }
+
+/* prévia da barra de progresso a partir do storyboard */
+.sb-tile { display: none; aspect-ratio: 16 / 9; border-radius: 8px; border: 2px solid #fff; background-color: #111; background-repeat: no-repeat; }
+.sb-tile.on { display: block; }
+.seek-tooltip .sb-tile { width: 160px; }
+.player:not(.fs) .seek-tooltip .sb-tile { width: 120px; }
+.scrub-hint .sb-tile { width: 160px; }
+@media (hover: hover) and (pointer: fine) { .player:not(.fs) .seek-tooltip .sb-tile { width: 176px; } .seek-tooltip .sb-tile { width: 220px; } }
+img.sb-hide { display: none !important; }
