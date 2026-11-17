@@ -1241,8 +1241,10 @@ const P = {
   },
   updateCC() {
     const has = this.subTracks().length > 0;
-    $('#btn-cc').classList.toggle('hidden', !has);
-    $('#btn-cc').style.color = this.subSel ? 'var(--accent-2)' : '';
+    for (const id of ['#btn-cc', '#b-cc']) {
+      $(id).classList.toggle('hidden', !has);
+      $(id).style.color = this.subSel ? 'var(--accent-2)' : '';
+    }
   },
   toggleCC() {
     const tr = this.subTracks();
@@ -1298,7 +1300,7 @@ video.addEventListener('ended', () => P.onEnded());
 video.addEventListener('ratechange', () => { if (!boost.active) { prefs.rate = video.playbackRate; savePrefs(); } });
 video.addEventListener('volumechange', () => {
   prefs.volume = video.volume; prefs.muted = video.muted; savePrefs();
-  $('#btn-mute').innerHTML = icon(video.muted || video.volume === 0 ? 'mute' : 'vol');
+  $('#btn-mute').innerHTML = $('#b-mute').innerHTML = icon(video.muted || video.volume === 0 ? 'mute' : 'vol');
   $('#vol').value = video.muted ? 0 : video.volume;
 });
 video.addEventListener('loadedmetadata', () => {
@@ -1323,6 +1325,7 @@ video.volume = prefs.volume; video.muted = prefs.muted;
 function updatePlayBtn() {
   const paused = video.paused;
   $('#btn-play').innerHTML = icon(paused ? 'play' : 'pause');
+  $('#b-play').innerHTML = icon(paused ? 'play' : 'pause');
   $('#mini-play').innerHTML = icon(paused ? 'play' : 'pause');
   if ('mediaSession' in navigator) navigator.mediaSession.playbackState = paused ? 'paused' : 'playing';
 }
@@ -1377,6 +1380,23 @@ onBtn('#btn-settings', () => settingsMenu());
 onBtn('#btn-cc', () => P.toggleCC());
 onBtn('#btn-mute', () => { video.muted = !video.muted; if (!video.muted && video.volume === 0) video.volume = 1; });
 onBtn('#btn-pip', () => togglePiP());
+// controles da barra inferior (desktop)
+onBtn('#b-play', () => P.togglePlay());
+onBtn('#b-prev', () => P.prev());
+onBtn('#b-next', () => P.next());
+onBtn('#b-mute', () => { video.muted = !video.muted; if (!video.muted && video.volume === 0) video.volume = 1; });
+onBtn('#b-cc', () => P.toggleCC());
+onBtn('#b-settings', () => settingsMenu());
+onBtn('#b-theater', () => toggleTheater());
+// modo teatro: o vídeo ocupa toda a área da janela (sem tela cheia do sistema); lembrado entre sessões
+function toggleTheater(on = !prefs.theater) {
+  prefs.theater = on; savePrefs();
+  player.classList.toggle('theater', on);
+  $('#b-theater').innerHTML = icon(on ? 'theater-exit' : 'theater');
+  $('#b-theater').title = on ? 'Sair do modo teatro (t)' : 'Modo teatro (t)';
+  player.scrollTop = 0;
+}
+toggleTheater(!!prefs.theater);
 $('#vol').addEventListener('input', (e) => { video.volume = +e.target.value; video.muted = video.volume === 0; });
 $('#vol').addEventListener('pointerdown', (e) => e.stopPropagation());
 $('#mini-play').onclick = (e) => { e.stopPropagation(); P.togglePlay(); };
@@ -1689,7 +1709,8 @@ function seekTip(clientX) {
 }
 seekEl.addEventListener('pointermove', (e) => {
   if (e.pointerType !== 'mouse' || seekDrag || !P.duration()) return;
-  stage.classList.add('bar-hover'); seekTip(e.clientX);
+  stage.classList.add('bar-hover');
+  $('#seek-hover').style.width = seekTip(e.clientX) * 100 + '%';
 });
 seekEl.addEventListener('pointerleave', () => stage.classList.remove('bar-hover'));
 function seekAt(clientX) {
@@ -1770,6 +1791,7 @@ document.addEventListener('keydown', (e) => {
     ArrowUp: () => { video.muted = false; video.volume = clamp(video.volume + 0.05, 0, 1); flash(`Volume ${Math.round(video.volume * 100)}%`); },
     ArrowDown: () => { video.volume = clamp(video.volume - 0.05, 0, 1); flash(`Volume ${Math.round(video.volume * 100)}%`); },
     f: () => P.toggleFullscreen(), F: () => P.toggleFullscreen(), r: () => P.rotate(),
+    t: () => toggleTheater(), T: () => toggleTheater(),
     m: () => { video.muted = !video.muted; flash(video.muted ? 'Sem som' : 'Som ativado'); }, M: () => { video.muted = !video.muted; },
     c: () => P.toggleCC(), C: () => P.toggleCC(),
     i: () => (P.state === 'max' ? P.minimize() : P.maximize()), I: () => (P.state === 'max' ? P.minimize() : P.maximize()),
@@ -1787,7 +1809,9 @@ document.addEventListener('keydown', (e) => {
 // ===================================================================== dicas dos botões (desktop)
 {
   const hints = { 'btn-play': 'Reproduzir/pausar (k)', 'btn-fs': 'Tela cheia (f)', 'btn-mute': 'Sem som (m)', 'btn-cc': 'Legendas (c)',
-    'btn-min': 'Minimizar (i)', 'btn-next': 'Próximo (Shift+N)', 'btn-prev': 'Anterior (Shift+P)', 'btn-settings': 'Configurações', 'btn-rotate': 'Girar (r)' };
+    'btn-min': 'Minimizar (i)', 'btn-next': 'Próximo (Shift+N)', 'btn-prev': 'Anterior (Shift+P)', 'btn-settings': 'Configurações', 'btn-rotate': 'Girar (r)',
+    'b-play': 'Reproduzir/pausar (k)', 'b-prev': 'Anterior (Shift+P)', 'b-next': 'Próximo (Shift+N)', 'b-mute': 'Sem som (m)',
+    'b-cc': 'Legendas (c)', 'b-settings': 'Configurações', 'b-theater': 'Modo teatro (t)' };
   document.querySelectorAll('button[aria-label]').forEach((b) => { if (!b.title) b.title = hints[b.id] || b.getAttribute('aria-label'); });
 }
 

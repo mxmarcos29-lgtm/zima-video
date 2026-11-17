@@ -510,10 +510,61 @@ video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: con
   .player.max .list.compact .item.video .thumb { width: 168px; }
 }
 
+/* ============================================================= player no desktop (mouse) */
+.desk-only { display: none; }
+.seek-hover { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: rgba(255,255,255,.35); opacity: 0; transition: opacity .12s; }
+.stage.bar-hover .seek-hover { opacity: 1; }
+@media (hover: hover) and (pointer: fine) {
+  .desk-only { display: inline-flex; }
+  .desk-only.hidden { display: none !important; }
+  .ctrl-center { display: none; }
+  #btn-mute, #btn-cc, #btn-settings { display: none !important; }
+  .controls { background: linear-gradient(rgba(0,0,0,.5), transparent 22%, transparent 70%, rgba(0,0,0,.75)); }
+  .ctrl-bottom, .player.fs .ctrl-bottom { bottom: 4px; padding: 0 8px; gap: 0; height: 48px; }
+  .player.fs .ctrl-bottom { bottom: calc(10px + var(--safe-b)); padding: 0 20px; }
+  .ctrl-bottom .icon-btn { width: 44px; height: 44px; border-radius: 10px; }
+  .ctrl-bottom .icon-btn:hover { background: rgba(255,255,255,.12); }
+  #b-play svg { width: 30px; height: 30px; }
+  .time { flex: 1; padding-left: 6px; font-size: 13.5px; }
+  .volbox { align-items: center; }
+  .vol { display: block; width: 0; opacity: 0; transition: width .2s, opacity .2s; margin: 0; order: 0; }
+  .volbox:hover .vol, .vol:focus-visible, .volbox.dragging .vol { width: 84px; opacity: 1; margin: 0 6px 0 2px; }
+  /* a barra de progresso fica logo acima dos controles e engrossa ao passar o mouse */
+  .seek, .player.fs .seek { left: 14px; right: 14px; bottom: 50px; height: 18px; }
+  .player.fs .seek { left: 22px; right: 22px; bottom: calc(56px + var(--safe-b)); }
+  .stage.show-ctrl .seek-track { height: 4px; border-radius: 2px; }
+  .stage.bar-hover .seek-track, .stage.scrubbing .seek-track { height: 7px; }
+  .seek-track > div:not(.seek-knob) { border-radius: 2px; }
+  .seek-knob { width: 15px; height: 15px; margin: -7.5px 0 0 -7.5px; transform: scale(0); }
+  .stage.bar-hover .seek-knob, .stage.scrubbing .seek-knob { transform: scale(1); }
+  .stage.show-ctrl:not(.bar-hover):not(.scrubbing) .seek-knob { transform: scale(0); }
+  .seek-tooltip { bottom: 26px; }
+  .player:not(.fs) .seek-tooltip img { width: 176px; }
+  .seek-tooltip img { width: 220px; }
+  /* sem os controles visíveis, o player mostra só o vídeo (inclusive sem a barra) */
+  .stage:not(.show-ctrl) .ctrl-bottom { pointer-events: none; }
+}
+
+/* modo teatro: o vídeo usa toda a área da janela; detalhes e "Nesta pasta" ficam embaixo */
+@media (min-width: 1000px) {
+  .player.max.theater { display: block; padding: 0; overflow-y: auto; }
+  .player.max.theater .stage, .player.max.theater.portrait-video .stage {
+    width: 100%; height: 100vh; height: 100dvh; max-height: none; aspect-ratio: auto; border-radius: 0; margin: 0; position: relative;
+  }
+  .player.max.theater .details { display: block; max-width: 1280px; margin: 0 auto; padding: 16px 24px 32px; }
+  .player.max.theater #d-title { font-size: 21px; padding: 0; }
+  .player.max.theater .d-meta, .player.max.theater .d-actions { padding-left: 0; }
+  .player.max.theater .d-next-h { display: block; padding-left: 0; }
+  .player.max.theater #d-list { position: static; max-height: none; overflow: visible; }
+  .player.max.theater #d-list::before { content: none; }
+}
+
 /* ============================================================= tela cheia
    No fim do arquivo e com especificidade maior: precisa vencer as regras de vídeo vertical
    (.portrait-video) e do layout desktop em duas colunas, senão o vídeo fica cortado. */
-.player.fs .stage, .player.max.fs .stage, .player.max.fs.portrait-video .stage {
+.player.fs .stage, .player.max.fs .stage, .player.max.fs.portrait-video .stage,
+.player.max.theater.fs .stage, .player.max.theater.fs.portrait-video .stage {
   position: fixed; inset: 0; width: 100%; height: 100%; max-width: none; max-height: none; aspect-ratio: auto;
   margin: 0; border-radius: 0; z-index: 5; grid-column: auto; grid-row: auto;
 }
+
