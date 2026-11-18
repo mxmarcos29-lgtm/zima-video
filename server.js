@@ -1455,11 +1455,14 @@ fs.mkdirSync(path.join(PEOPLE_DIR, 'c'), { recursive: true });
 
 const faceVideos = new Map(); // path -> { key, at, frames, faces: [{ id, t, score, n, emb: Float32Array }] }
 const faceById = new Map();   // id -> { path, face }
-let peopleDb = { refs: {}, ignored: {}, excluded: [], auto: {}, answered: {}, blocked: {}, notPerson: {} };
+let peopleDb = { refs: {}, ignored: {}, excluded: [], auto: {}, answered: {}, blocked: {}, notPerson: {}, nameExcluded: [], nameIgnored: {}, nameRejected: {} };
+// nameExcluded: pastas fora da busca pelo nome do arquivo; nameIgnored: chave do nome -> nome ("não é nome de pessoa");
+// nameRejected: 'caminho|tag' -> 1 (o nome no arquivo não é esta pessoa)
 // auto: faceId -> tag (aprendido sozinho pelas tags); answered: 'path|tag' -> resposta do usuário;
 // blocked: 'tag|faceId' -> rosto que o usuário disse não ser a pessoa; notPerson: tag -> 1 (não perguntar se é pessoa) // refs: tag -> [faceId]; ignored: faceId -> 1; excluded: pastas fora da análise de rosto
 // pasta (ou algo dentro dela) excluída da análise de rosto?
 const faceExcluded = (rel) => peopleDb.excluded.some((x) => rel === x || rel.startsWith(x + '/'));
+const nameExcluded = (rel) => peopleDb.nameExcluded.some((x) => rel === x || rel.startsWith(x + '/'));
 let clusterCache = null;
 const b64ToEmb = (b) => { const buf = Buffer.from(b, 'base64'); return new Float32Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.length)); };
 const embToB64 = (e) => Buffer.from(e.buffer, e.byteOffset, e.byteLength).toString('base64');
@@ -1485,7 +1488,7 @@ function indexFaces(rel, rec) {
       }
     }
   } catch { /* sem dados */ }
-  try { const j = JSON.parse(fs.readFileSync(PEOPLE_FILE, 'utf8')); peopleDb = { refs: j.refs || {}, ignored: j.ignored || {}, excluded: j.excluded || [], auto: j.auto || {}, answered: j.answered || {}, blocked: j.blocked || {}, notPerson: j.notPerson || {} }; } catch { /* vazio */ }
+  try { const j = JSON.parse(fs.readFileSync(PEOPLE_FILE, 'utf8')); peopleDb = { refs: j.refs || {}, ignored: j.ignored || {}, excluded: j.excluded || [], auto: j.auto || {}, answered: j.answered || {}, blocked: j.blocked || {}, notPerson: j.notPerson || {}, nameExcluded: j.nameExcluded || [], nameIgnored: j.nameIgnored || {}, nameRejected: j.nameRejected || {} }; } catch { /* vazio */ }
 })();
 async function saveFaceVideo(rel, rec) {
   const file = videoFile(rel);
@@ -1495,10 +1498,12 @@ async function saveFaceVideo(rel, rec) {
 const savePeople = () => { clusterCache = null; return saveJSON(PEOPLE_FILE, peopleDb); };
 async function peopleTagRenamed(from, to) {
   // respostas ('caminho|tag') e bloqueios ('tag|rosto') acompanham a tag renomeada/juntada
-  for (const key of Object.keys(peopleDb.answered)) {
-    const i = key.lastIndexOf('|'); if (key.slice(i + 1) !== from) continue;
-    const v = peopleDb.answered[key]; delete peopleDb.answered[key];
-    if (to) peopleDb.answered[`${key.slice(0, i)}|${to}`] = v;
+  for (const k of ['answered', 'nameRejected']) {
+    for (const key of Object.keys(peopleDb[k])) {
+      const i = key.lastIndexOf('|'); if (key.slice(i + 1) !== from) continue;
+      const v = peopleDb[k][key]; delete peopleDb[k][key];
+      if (to) peopleDb[k][`${key.slice(0, i)}|${to}`] = v;
+    }
   }
   for (const key of Object.keys(peopleDb.blocked)) {
     const i = key.lastIndexOf('|'); if (key.slice(0, i) !== from) continue;
@@ -1515,15 +1520,19 @@ async function peopleTagRenamed(from, to) {
 // renomear/mover/excluir arquivos: os rostos acompanham
 async function peopleRelocate(pairs, removed = []) {
   const map = (p) => { for (const [a, b] of pairs) { if (p === a) return b; if (p.startsWith(a + '/')) return b + p.slice(a.length); } return null; };
-  const ex = peopleDb.excluded.map((x) => map(x) ?? x).filter((x) => !removed.some((a) => x === a || x.startsWith(a + '/')));
-  if (ex.join('\n') !== peopleDb.excluded.join('\n')) { peopleDb.excluded = ex; await savePeople(); }
   let moved = false;
-  for (const key of Object.keys(peopleDb.answered)) {
-    const i = key.lastIndexOf('|'); const p = key.slice(0, i); const n = map(p);
-    const gone = removed.some((x) => p === x || p.startsWith(x + '/'));
-    if (n === null && !gone) continue;
-    const v = peopleDb.answered[key]; delete peopleDb.answered[key]; moved = true;
-    if (n !== null) peopleDb.answered[`${n}|${key.slice(i + 1)}`] = v;
+  for (const k of ['excluded', 'nameExcluded']) {
+    const ex = peopleDb[k].map((x) => map(x) ?? x).filter((x) => !removed.some((a) => x === a || x.startsWith(a + '/')));
+    if (ex.join('\n') !== peopleDb[k].join('\n')) { peopleDb[k] = ex; moved = true; }
+  }
+  for (const k of ['answered', 'nameRejected']) {
+    for (const key of Object.keys(peopleDb[k])) {
+      const i = key.lastIndexOf('|'); const p = key.slice(0, i); const n = map(p);
+      const gone = removed.some((x) => p === x || p.startsWith(x + '/'));
+      if (n === null && !gone) continue;
+      const v = peopleDb[k][key]; delete peopleDb[k][key]; moved = true;
+      if (n !== null) peopleDb[k][`${n}|${key.slice(i + 1)}`] = v;
+    }
   }
   if (moved) await savePeople();
   for (const [rel, rec] of [...faceVideos.entries()]) {
@@ -1608,6 +1617,32 @@ const normName = (s) => ` ${norm(String(s)).replace(/\.[a-z0-9]{2,4}$/, '').repl
 const NAME_STOP = new Set(('the and com sem para por dos das de da do e o a os as em no na vs feat ft part parte cena scene full hd uhd video '
   + 'clip episodio episode temporada season dublado legendado remastered extended director cut edition version official trailer '
   + 'new best collection compilation bonus behind making uncut original').split(' '));
+// distância de edição limitada (para achar erros de digitação em nomes)
+function editDist(a, b, max) {
+  if (Math.abs(a.length - b.length) > max) return max + 1;
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const cur = [i]; let low = i;
+    for (let j = 1; j <= b.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+      if (j > 1 && a[i - 1] === b[j - 2] && a[i - 2] === b[j - 1]) cur[j] = Math.min(cur[j], prev[j - 2] + 1); // letras trocadas
+      low = Math.min(low, cur[j]);
+    }
+    if (low > max) return max + 1;
+    prev = cur;
+  }
+  return prev[b.length];
+}
+// "Maria Sousa" x "Maria Souza", "Joao Lmia" x "Joao Lima": mesmo número de palavras, diferença pequena
+// (1 letra em nomes curtos, 2 em nomes longos) e a primeira letra de cada palavra igual
+function typoOf(a, b) {
+  if (!a || !b || a === b) return false;
+  const wa = a.split(' '); const wb = b.split(' ');
+  if (wa.length !== wb.length || a.length < 7) return false;
+  if (wa.some((w, i) => w[0] !== wb[i][0])) return false;
+  const max = Math.min(a.length, b.length) >= 12 ? 2 : 1;
+  return editDist(a, b, max) <= max;
+}
 async function nameSuggestions(scope) {
   const db = await loadTags();
   const people = Object.entries(db.tags).filter(([, v]) => v.person)
@@ -1617,13 +1652,15 @@ async function nameSuggestions(scope) {
   const sugg = []; const cand = new Map(); // nome possível -> Set(arquivos)
   const known = new Set(Object.keys(db.tags).map((t) => normName(t)));
   for (const [, v] of Object.entries(db.tags)) for (const a of v.aliases || []) known.add(normName(a));
+  let skipped = 0;
   for (const it of idx) {
     if (it.d || it.t !== 'video' || (prefix && !it.p.startsWith(prefix))) continue;
+    if (nameExcluded(it.p)) { skipped++; continue; }
     const name = path.posix.basename(it.p);
     const n = normName(name);
     const has = new Set(db.items[it.p] || []);
     for (const pp of people) {
-      if (has.has(pp.tag)) continue;
+      if (has.has(pp.tag) || peopleDb.nameRejected[`${it.p}|${pp.tag}`]) continue;
       const hit = pp.pats.find((x) => n.includes(x));
       if (hit) sugg.push({ path: it.p, name, tag: pp.tag, match: hit.trim(), via: 'nome' });
     }
@@ -1635,18 +1672,37 @@ async function nameSuggestions(scope) {
         const seq = words.slice(i, i + len);
         if (seq.length < len || !seq.every(isCap)) continue;
         const k = seq.join(' ');
-        if (known.has(normName(k))) continue;
+        if (known.has(normName(k)) || peopleDb.nameIgnored[normName(k).trim()]) continue;
         if (!cand.has(k)) cand.set(k, new Set());
         cand.get(k).add(it.p);
       }
     }
   }
-  const names = [...cand.entries()].filter(([, set]) => set.size >= 2)
-    .map(([nameStr, set]) => ({ name: nameStr, files: set.size, sample: [...set].slice(0, 3).map((p) => path.posix.basename(p)) }))
-    .sort((a, b) => b.files - a.files).slice(0, 60);
+  const all = [...cand.entries()].map(([nameStr, set]) => ({ name: nameStr, key: normName(nameStr).trim(), files: set.size, paths: set, sample: [...set].slice(0, 3).map((p) => path.posix.basename(p)) }));
+  // 1) erro de digitação de uma pessoa já cadastrada (vale mesmo se aparece em 1 arquivo só)
+  const personKeys = people.flatMap((pp) => pp.pats.map((x) => ({ tag: pp.tag, key: x.trim() })));
+  const typos = []; const used = new Set();
+  for (const c of all) {
+    const hit = personKeys.find((pk) => typoOf(c.key, pk.key));
+    if (!hit) continue;
+    used.add(c.key);
+    typos.push({ name: c.name, files: c.files, sample: c.sample, tag: hit.tag });
+  }
+  typos.sort((a, b) => b.files - a.files);
+  // 2) nomes novos repetidos em 2+ arquivos; grafias parecidas entre si viram um item só (com as variantes)
+  let names = all.filter((c) => !used.has(c.key) && c.files >= 2).sort((a, b) => b.files - a.files);
   // nomes de 3 palavras que contêm um de 2 com a mesma contagem: fica só o mais completo
-  const final = names.filter((x) => !names.some((y) => y !== x && y.name.includes(x.name) && y.files === x.files));
-  return { suggestions: sugg.slice(0, 2000), names: final };
+  names = names.filter((x) => !names.some((y) => y !== x && y.name.includes(x.name) && y.files === x.files));
+  const singles = all.filter((c) => !used.has(c.key) && c.files === 1);
+  const final = [];
+  for (const c of names) {
+    const home = final.find((f) => typoOf(c.key, f.key));
+    if (home) { home.variants.push({ name: c.name, files: c.files }); for (const p of c.paths) home.paths.add(p); continue; }
+    final.push({ ...c, paths: new Set(c.paths), variants: [] });
+  }
+  for (const c of singles) { const home = final.find((f) => typoOf(c.key, f.key)); if (home) { home.variants.push({ name: c.name, files: 1 }); for (const p of c.paths) home.paths.add(p); } }
+  const out = final.slice(0, 60).map((f) => ({ name: f.name, files: f.paths.size, sample: f.sample, variants: f.variants }));
+  return { suggestions: sugg.slice(0, 2000), names: out, typos: typos.slice(0, 60), skipped, ignored: Object.keys(peopleDb.nameIgnored).length };
 }
 
 // aplicar sugestões (pares arquivo → tag)
@@ -2132,17 +2188,41 @@ const server = http.createServer(async (req, res) => {
       case '/api/people/worker-revoke': await requireAdmin(req); return sendJSON(res, await revokeWorker((await readBody(req)).name));
       case '/api/people/worker.zip': await requireAdminGet(req); return await sendWorkerZip(res);
       case '/api/people/exclude': {
-        // GET: lista; POST { path, on }: tira (on=true) ou devolve (on=false) uma pasta da análise de rosto
-        if (req.method === 'GET') { await requireAdminGet(req); return sendJSON(res, { excluded: peopleDb.excluded }); }
+        // GET: listas; POST { path, on, kind }: tira (on=true) ou devolve (on=false) uma pasta da análise
+        // de rosto (kind 'faces') ou da busca pelo nome do arquivo (kind 'names')
+        if (req.method === 'GET') { await requireAdminGet(req); return sendJSON(res, { excluded: peopleDb.excluded, names: peopleDb.nameExcluded }); }
         await requireAdmin(req); const b = await readBody(req);
+        const list = b.kind === 'names' ? 'nameExcluded' : 'excluded';
         const r = relOf(resolveSafe(b.path || ''));
         const st = await statSafe(path.join(ROOT, r));
         if (b.on && (!r || !st || !st.isDirectory())) throw new HttpError(400, r ? 'Pasta não encontrada' : 'Escolha uma pasta');
-        const set = new Set(peopleDb.excluded);
+        const set = new Set(peopleDb[list]);
         if (b.on) set.add(r); else set.delete(r);
-        peopleDb.excluded = [...set].sort(ptSort);
+        peopleDb[list] = [...set].sort(ptSort);
         await savePeople();
-        return sendJSON(res, { ok: true, excluded: peopleDb.excluded });
+        return sendJSON(res, { ok: true, excluded: peopleDb.excluded, names: peopleDb.nameExcluded });
+      }
+      case '/api/people/name-ignore': {
+        // GET: nomes marcados como "não é nome de pessoa"; POST { names: [...], on }: marca/desmarca
+        if (req.method === 'GET') { await requireAdminGet(req); return sendJSON(res, { names: Object.values(peopleDb.nameIgnored).sort(ptSort) }); }
+        await requireAdmin(req); const b = await readBody(req);
+        for (const n of b.names || []) { const k = normName(n).trim(); if (!k) continue; if (b.on === false) delete peopleDb.nameIgnored[k]; else peopleDb.nameIgnored[k] = String(n).slice(0, 80); }
+        await savePeople(); return sendJSON(res, { ok: true });
+      }
+      case '/api/people/name-reject': {
+        // { pairs: [{ path, tag }] }: o nome encontrado neste arquivo não é esta pessoa (não sugerir de novo)
+        await requireAdmin(req); const b = await readBody(req);
+        for (const x of b.pairs || []) peopleDb.nameRejected[`${relOf(resolveSafe(x.path))}|${cleanTagName(x.tag)}`] = 1;
+        await savePeople(); return sendJSON(res, { ok: true });
+      }
+      case '/api/people/alias': {
+        // { tag, alias }: outra grafia do nome da pessoa (ex.: erro de digitação nos arquivos)
+        await requireAdmin(req); const b = await readBody(req);
+        const db = await loadTags(); const t = cleanTagName(b.tag);
+        if (!db.tags[t]) throw new HttpError(404, 'Tag não encontrada');
+        const al = new Set(db.tags[t].aliases || []); al.add(String(b.alias || '').replace(/\s+/g, ' ').trim().slice(0, 60));
+        al.delete(''); db.tags[t].aliases = [...al].slice(0, 30); db.tags[t].person = true;
+        await saveTags(); return sendJSON(res, { ok: true, ...(await listTags()) });
       }
       case '/api/people/reanalyze': {
         await requireAdmin(req); const b = await readBody(req);

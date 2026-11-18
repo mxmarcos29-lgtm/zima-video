@@ -861,3 +861,14 @@ body.cf-light .thumb video.pv.on, body.cf-strong .thumb video.pv.on { opacity: .
 .pp-q-opt span { font-size: 13px; font-weight: 600; padding: 2px 2px 0; }
 .pp-q-opt small { color: var(--muted); font-size: 11px; padding: 0 2px 2px; }
 .pp-ref em { position: absolute; left: 2px; bottom: 2px; font-style: normal; font-size: 10px; background: rgba(0,0,0,.7); color: #fff; border-radius: 4px; padding: 0 4px; }
+.pp-cand-b { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; flex: none; }
+.pp-var { color: #ffb020; font-size: 12px; margin-top: 3px; }
+.pp-warn { border-left: 3px solid #ffb020; }
+.pp-namerow { grid-template-columns: auto 1fr auto; }
+.pp-namerow .pp-no { grid-row: span 2; grid-column: 3; width: 34px; height: 34px; }
+.pp-namerow .pp-no svg { width: 18px; height: 18px; }
+.pp-link { display: block; margin-top: 10px; color: var(--accent-2); font-size: 13px; text-align: left; padding: 4px 0; }
+@media (max-width: 560px) { .pp-cand { flex-direction: column; align-items: stretch; } .pp-cand-b { justify-content: flex-start; } }
+.pp-namerow > span, .pp-namerow > small { grid-column: 2; }
+.pp-namerow > input { grid-column: 1; grid-row: 1 / span 2; }
+.pp-namerow > .pp-no { grid-column: 3; grid-row: 1 / span 2; }

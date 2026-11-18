@@ -76,7 +76,7 @@ const People = (() => {
     const cb = el('button', 'btn primary', `${icon('add')}${w.length ? 'Ajudante / conectar outro PC' : 'Conectar ajudante (PC)'}`); cb.onclick = connectSheet;
     btns.appendChild(cb);
     if (st.failed) { const rb = el('button', 'btn', 'Tentar de novo os com erro'); rb.onclick = async () => { await apiPost('people/reanalyze', null, { failed: true }); toast('Os vídeos com erro voltam para a fila'); render(); }; btns.appendChild(rb); }
-    const exb = el('button', 'btn', `Pastas excluídas${st.excluded.length ? ` (${st.excluded.length})` : ''}`); exb.onclick = excludedSheet;
+    const exb = el('button', 'btn', `Pastas excluídas${st.excluded.length ? ` (${st.excluded.length})` : ''}`); exb.onclick = () => excludedSheet('faces');
     btns.appendChild(exb);
     card.appendChild(btns);
     body.appendChild(card);
@@ -273,19 +273,36 @@ const People = (() => {
   // ================================================================ pelo nome do arquivo
   async function renderNames(body) {
     body.innerHTML = '';
+    await loadExcluded();
     const intro = el('div', 'pp-card');
     intro.innerHTML = `<div class="pp-sub">Procura o nome de cada pessoa (e os apelidos) no nome dos arquivos de vídeo — sem diferenciar maiúsculas, acentos, pontos, traços ou “_”. Ex.: <code>Maria.Souza.2024.1080p</code> encontra “Maria Souza”.</div>`;
     const acts = el('div', 'pp-actions');
     const scanAll = el('button', 'btn primary', `${icon('search')}Procurar na biblioteca toda`);
     const scanHere = el('button', 'btn', 'Só nesta pasta');
     scanHere.disabled = !B.path;
-    acts.append(scanAll, scanHere); intro.appendChild(acts);
+    const exb = el('button', 'btn', `Pastas excluídas${excl.names.length ? ` (${excl.names.length})` : ''}`);
+    exb.onclick = () => excludedSheet('names');
+    acts.append(scanAll, scanHere, exb); intro.appendChild(acts);
     body.appendChild(intro);
     const out = el('div'); body.appendChild(out);
-    const run = async (scope) => {
+    let scope = '';
+    const run = async (sc = scope) => {
+      scope = sc;
       out.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
-      const r = await apiPost('people/names', null, { scope });
+      const [r, sim] = await Promise.all([apiPost('people/names', null, { scope }), api('tags', { similar: 1 }).catch(() => ({ groups: [] }))]);
       out.innerHTML = '';
+      if (r.skipped) out.appendChild(el('div', 'pp-note', `${r.skipped} vídeo(s) em pastas excluídas não foram considerados.`));
+
+      // pessoas cadastradas com nomes quase iguais (provável erro de digitação ao criar)
+      const dupPeople = sim.groups.filter((g) => g.some((x) => x.person));
+      if (dupPeople.length) {
+        const sd = el('div', 'pp-card pp-warn');
+        sd.innerHTML = `<div class="pp-sub"><b>${dupPeople.length} grupo(s) de pessoas com nomes muito parecidos</b> — ${dupPeople.slice(0, 3).map((g) => g.map((x) => `“${esc(x.name)}”`).join(' / ')).join(' · ')}. Pode ser a mesma pessoa com erro de digitação.</div>`;
+        const jb = el('button', 'btn', 'Revisar e juntar'); jb.onclick = () => Tags.similarSheet();
+        const a2 = el('div', 'pp-actions'); a2.appendChild(jb); sd.appendChild(a2);
+        out.appendChild(sd);
+      }
+
       // sugestões agrupadas por pessoa, com caixas de seleção
       const s1 = el('section', 'pp-sec');
       s1.appendChild(el('h2', '', `Encontrados${r.suggestions.length ? ` <small>${r.suggestions.length}</small>` : ''}`));
@@ -294,36 +311,74 @@ const People = (() => {
         const sel = new Set(r.suggestions.map((_, i) => i));
         const byTag = {};
         r.suggestions.forEach((x, i) => { (byTag[x.tag] = byTag[x.tag] || []).push([x, i]); });
+        const ap = el('button', 'btn primary pp-applyall', '');
+        const upd = () => { ap.textContent = `Aplicar selecionados (${sel.size})`; ap.disabled = !sel.size; };
+        s1.appendChild(ap);
         for (const [tag, list] of Object.entries(byTag)) {
           s1.appendChild(el('div', 'pp-tagh', `${Tags.chip(tag)} <small>${list.length} arquivo(s)</small>`));
           for (const [x, i] of list) {
-            const row = el('label', 'pp-namerow');
+            const row = el('div', 'pp-namerow');
             row.innerHTML = `<input type="checkbox" checked><span>${highlightName(x.name, x.match)}</span><small>${esc(dirname(x.path))}</small>`;
-            $('input', row).onchange = (e) => { if (e.target.checked) sel.add(i); else sel.delete(i); ap.textContent = `Aplicar selecionados (${sel.size})`; };
+            $('input', row).onchange = (e) => { if (e.target.checked) sel.add(i); else sel.delete(i); upd(); };
+            row.onclick = (e) => { if (e.target.closest('input, button')) return; const c = $('input', row); c.checked = !c.checked; c.onchange({ target: c }); };
+            const no = el('button', 'icon-btn pp-no', icon('close')); no.title = `Não é ${tag} (não sugerir de novo)`;
+            no.onclick = async () => { await apiPost('people/name-reject', null, { pairs: [x] }); sel.delete(i); row.remove(); upd(); };
+            row.appendChild(no);
             s1.appendChild(row);
           }
         }
-        const ap = el('button', 'btn primary pp-applyall', `Aplicar selecionados (${sel.size})`);
+        upd();
         ap.onclick = async () => {
           const res = await apiPost('people/apply', null, { pairs: [...sel].map((i) => r.suggestions[i]) });
-          Tags.apply(res); toast(`${res.applied} tag(s) aplicada(s)`); run(scope);
+          Tags.apply(res); toast(`${res.applied} tag(s) aplicada(s)`); run();
         };
-        s1.insertBefore(ap, s1.children[1]);
+        s1.appendChild(el('div', 'pp-note', 'O ✕ ao lado do arquivo diz que aquele nome não é a pessoa — ele não volta a ser sugerido.'));
       }
       out.appendChild(s1);
+
+      // grafias parecidas com o nome de uma pessoa cadastrada
+      if (r.typos.length) {
+        const s3 = el('section', 'pp-sec');
+        s3.appendChild(el('h2', '', `Parece erro de digitação <small>${r.typos.length}</small>`));
+        s3.appendChild(el('div', 'pp-note', 'Nomes nos arquivos muito parecidos com o de uma pessoa cadastrada. Se for a mesma pessoa, a grafia vira um apelido e os arquivos passam a ser encontrados.'));
+        for (const t of r.typos) {
+          const row = el('div', 'pp-cand');
+          row.innerHTML = `<div><b>${esc(t.name)}</b> <small>em ${t.files} arquivo(s)</small> → ${Tags.chip(t.tag)}<div class="pp-sample">${t.sample.map(esc).join(' · ')}</div></div>`;
+          const bx = el('div', 'pp-cand-b');
+          const yes = el('button', 'btn primary', 'É a mesma pessoa');
+          yes.onclick = async () => { const res = await apiPost('people/alias', null, { tag: t.tag, alias: t.name }); Tags.apply(res); toast(`“${t.name}” agora também encontra ${t.tag}`); run(); };
+          const no = el('button', 'btn', 'Não é');
+          no.onclick = async () => { await apiPost('people/name-ignore', null, { names: [t.name] }); row.remove(); };
+          bx.append(yes, no); row.appendChild(bx); s3.appendChild(row);
+        }
+        out.appendChild(s3);
+      }
+
       // nomes que se repetem em vários arquivos e ainda não são pessoas
       const s2 = el('section', 'pp-sec');
       s2.appendChild(el('h2', '', 'Nomes que se repetem'));
       if (!r.names.length) s2.appendChild(el('div', 'pp-note', 'Nenhum nome novo repetido (2 ou mais palavras com inicial maiúscula em pelo menos 2 arquivos).'));
       for (const n of r.names) {
         const row = el('div', 'pp-cand');
-        row.innerHTML = `<div><b>${esc(n.name)}</b> <small>em ${n.files} arquivos</small><div class="pp-sample">${n.sample.map(esc).join(' · ')}</div></div>`;
-        const mk = el('button', 'btn', 'Criar pessoa');
+        const vars = n.variants.length ? `<div class="pp-var">Também escrito: ${n.variants.map((v) => `<b>${esc(v.name)}</b> (${v.files})`).join(', ')} — provável erro de digitação</div>` : '';
+        row.innerHTML = `<div><b>${esc(n.name)}</b> <small>em ${n.files} arquivos</small>${vars}<div class="pp-sample">${n.sample.map(esc).join(' · ')}</div></div>`;
+        const bx = el('div', 'pp-cand-b');
+        const mk = el('button', 'btn primary', 'Criar pessoa');
         mk.onclick = async () => {
           const t = await apiPost('people/name', null, { faces: [], name: n.name, apply: false });
-          Tags.apply(t); toast(`“${n.name}” criada como pessoa`); run(scope);
+          if (n.variants.length) await apiPost('tags', { action: 'edit' }, { name: t.tag, aliases: n.variants.map((v) => v.name) }).then((x) => Tags.apply(x));
+          else Tags.apply(t);
+          toast(`“${n.name}” criada como pessoa${n.variants.length ? ` (com ${n.variants.length} grafia(s) parecida(s))` : ''}`); run();
         };
-        row.appendChild(mk); s2.appendChild(row);
+        const no = el('button', 'btn', 'Não é nome');
+        no.title = 'Não é uma pessoa — não sugerir de novo';
+        no.onclick = async () => { await apiPost('people/name-ignore', null, { names: [n.name, ...n.variants.map((v) => v.name)] }); row.remove(); };
+        bx.append(mk, no); row.appendChild(bx); s2.appendChild(row);
+      }
+      if (r.ignored) {
+        const ig = el('button', 'pp-link', `${r.ignored} nome(s) marcado(s) como “não é nome” — ver/desfazer`);
+        ig.onclick = () => ignoredSheet(() => run());
+        s2.appendChild(ig);
       }
       out.appendChild(s2);
     };
@@ -337,47 +392,77 @@ const People = (() => {
     return words.reduce((acc, w) => acc.replace(new RegExp(`(${w.split('').map((ch) => ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('[^a-z0-9]?')})`, 'i'), '<mark>$1</mark>'), n);
   }
 
-  // ================================================================ pastas fora da análise de rosto
-  let excluded = null;
-  async function loadExcluded() { try { excluded = (await api('people/exclude')).excluded; } catch { excluded = []; } return excluded; }
-  const isExcluded = (p) => (excluded || []).some((x) => p === x || p.startsWith(x + '/'));
-  async function setExcluded(p, on) {
+  // ================================================================ pastas excluídas (rosto e nome do arquivo)
+  const KINDS = {
+    faces: { title: 'Pastas fora da análise de rosto', off: 'não será mais analisada por rosto', on: 'volta para a análise de rosto',
+      row: ['Não analisar rostos nesta pasta', 'Voltar a analisar rostos nesta pasta', 'Sem análise de rosto (pasta acima excluída)'],
+      pick: 'Excluir esta pasta da análise de rosto',
+      note: 'Os vídeos destas pastas (e das subpastas) não são enviados ao ajudante, e os rostos já encontrados nelas deixam de aparecer nos grupos e nas sugestões.' },
+    names: { title: 'Pastas fora da busca por nome', off: 'não entra mais na busca pelo nome do arquivo', on: 'volta para a busca pelo nome do arquivo',
+      row: ['Não procurar nomes de pessoas nesta pasta', 'Voltar a procurar nomes nesta pasta', 'Sem busca por nome (pasta acima excluída)'],
+      pick: 'Excluir esta pasta da busca por nome',
+      note: 'Os arquivos destas pastas (e das subpastas) não são considerados ao procurar nomes de pessoas no nome do arquivo.' },
+  };
+  const excl = { faces: null, names: null };
+  async function loadExcluded() {
+    try { const r = await api('people/exclude'); excl.faces = r.excluded; excl.names = r.names || []; } catch { excl.faces = []; excl.names = []; }
+    return excl;
+  }
+  const isExcluded = (p, kind = 'faces') => (excl[kind] || []).some((x) => p === x || p.startsWith(x + '/'));
+  async function setExcluded(p, on, kind = 'faces') {
     try {
-      excluded = (await apiPost('people/exclude', null, { path: p, on })).excluded;
-      toast(on ? `“${basename(p) || 'Início'}” não será mais analisada por rosto` : `“${basename(p) || 'Início'}” volta para a análise de rosto`);
+      const r = await apiPost('people/exclude', null, { path: p, on, kind });
+      excl.faces = r.excluded; excl.names = r.names || [];
+      toast(`“${basename(p) || 'Início'}” ${on ? KINDS[kind].off : KINDS[kind].on}`);
       if (open) render();
     } catch (e) { toast(e.message); }
   }
-  // linha no menu ⋮ de uma pasta (modo administrador)
+  // linhas no menu ⋮ de uma pasta (modo administrador)
   function folderRow(b, e) {
-    if (excluded === null) loadExcluded();
-    const on = isExcluded(e.path);
-    const parentEx = on && !excluded.includes(e.path);
-    Sheet.row(b, { ico: 'person', label: parentEx ? 'Sem análise de rosto (pasta acima excluída)' : on ? 'Voltar a analisar rostos nesta pasta' : 'Não analisar rostos nesta pasta',
-      onClick: () => { Sheet.close(); if (parentEx) whenHistoryIdle(excludedSheet); else setExcluded(e.path, !on); } });
+    if (excl.faces === null) loadExcluded();
+    for (const kind of ['faces', 'names']) {
+      const on = isExcluded(e.path, kind);
+      const parentEx = on && !excl[kind].includes(e.path);
+      const k = KINDS[kind];
+      Sheet.row(b, { ico: kind === 'faces' ? 'person' : 'search', label: parentEx ? k.row[2] : on ? k.row[1] : k.row[0],
+        onClick: () => { Sheet.close(); if (parentEx) whenHistoryIdle(() => excludedSheet(kind)); else setExcluded(e.path, !on, kind); } });
+    }
   }
-  async function excludedSheet() {
+  async function excludedSheet(kind = 'faces') {
     await loadExcluded();
+    const k = KINDS[kind]; const list = excl[kind];
     Sheet.open((b) => {
-      Sheet.header(b, 'Pastas excluídas');
-      b.appendChild(el('div', 'sheet-note', 'Os vídeos destas pastas (e das subpastas) não são enviados ao ajudante, e os rostos já encontrados nelas deixam de aparecer nos grupos e nas sugestões. A busca pelo nome do arquivo continua valendo.'));
-      if (!excluded.length) b.appendChild(el('div', 'sheet-note', 'Nenhuma pasta excluída.'));
-      for (const p of excluded) Sheet.row(b, { ico: 'folder', label: p || 'Início', value: 'Incluir de novo', onClick: async () => { await setExcluded(p, false); excludedSheet(); } });
-      Sheet.row(b, { ico: 'add', label: 'Excluir uma pasta…', onClick: () => pickFolder(B.tagView ? '' : B.path) });
+      Sheet.header(b, k.title);
+      b.appendChild(el('div', 'sheet-note', k.note));
+      if (!list.length) b.appendChild(el('div', 'sheet-note', 'Nenhuma pasta excluída.'));
+      for (const p of list) Sheet.row(b, { ico: 'folder', label: p || 'Início', value: 'Incluir de novo', onClick: async () => { await setExcluded(p, false, kind); excludedSheet(kind); } });
+      Sheet.row(b, { ico: 'add', label: 'Excluir uma pasta…', onClick: () => pickFolder(B.tagView ? '' : B.path, kind) });
     });
   }
   // navegador de pastas simples para escolher qual excluir
-  async function pickFolder(cur) {
+  async function pickFolder(cur, kind = 'faces') {
     let items = [];
     try { items = (await api('list', { path: cur })).entries.filter((i) => i.type === 'dir').map((i) => ({ ...i, path: cur ? `${cur}/${i.name}` : i.name })); } catch (e) { toast(e.message); }
     Sheet.open((b) => {
-      Sheet.header(b, cur ? basename(cur) : 'Início', cur ? () => pickFolder(dirname(cur)) : () => excludedSheet());
+      Sheet.header(b, cur ? basename(cur) : 'Início', cur ? () => pickFolder(dirname(cur), kind) : () => excludedSheet(kind));
       if (cur) {
-        const on = isExcluded(cur);
-        Sheet.row(b, { ico: on ? 'check' : 'close', label: on ? 'Esta pasta já está excluída' : 'Excluir esta pasta da análise de rosto', onClick: on ? null : async () => { await setExcluded(cur, true); excludedSheet(); } });
+        const on = isExcluded(cur, kind);
+        Sheet.row(b, { ico: on ? 'check' : 'close', label: on ? 'Esta pasta já está excluída' : KINDS[kind].pick, onClick: on ? null : async () => { await setExcluded(cur, true, kind); excludedSheet(kind); } });
       }
       if (!items.length) b.appendChild(el('div', 'sheet-note', 'Sem subpastas.'));
-      for (const d of items) Sheet.row(b, { ico: 'folder', label: d.name, value: isExcluded(d.path) ? 'excluída' : null, chevron: true, onClick: () => pickFolder(d.path) });
+      for (const d of items) Sheet.row(b, { ico: 'folder', label: d.name, value: isExcluded(d.path, kind) ? 'excluída' : null, chevron: true, onClick: () => pickFolder(d.path, kind) });
+    });
+  }
+
+  // nomes marcados como "não é nome de pessoa" (para desfazer)
+  async function ignoredSheet(after) {
+    let names = [];
+    try { names = (await api('people/name-ignore')).names; } catch (e) { toast(e.message); return; }
+    Sheet.open((b) => {
+      Sheet.header(b, 'Não são nomes de pessoas');
+      b.appendChild(el('div', 'sheet-note', 'Estes nomes não são mais sugeridos. Toque para voltar a sugerir.'));
+      if (!names.length) b.appendChild(el('div', 'sheet-note', 'Nenhum.'));
+      for (const n of names) Sheet.row(b, { ico: 'close', label: n, value: 'Voltar a sugerir', onClick: async () => { await apiPost('people/name-ignore', null, { names: [n], on: false }); if (after) after(); ignoredSheet(after); } });
     });
   }
 
