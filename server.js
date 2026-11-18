@@ -892,6 +892,76 @@ function cleanTagName(n) {
   if (!n) throw new HttpError(400, 'Nome de tag vazio');
   return n;
 }
+// chave para comparar nomes de tag: sem maiúsculas, acentos e pontuação ("Maria.Souza" = "maria souza")
+const tagKey = (s) => norm(String(s || '')).replace(/[^a-z0-9]+/g, ' ').trim();
+// tag já existente com o mesmo nome (ou apelido de pessoa) — evita criar duplicadas
+function findTag(db, name) {
+  if (db.tags[name]) return name;
+  const k = tagKey(name); if (!k) return null;
+  for (const t of Object.keys(db.tags)) if (tagKey(t) === k) return t;
+  for (const [t, v] of Object.entries(db.tags)) if ((v.aliases || []).some((a) => tagKey(a) === k)) return t;
+  return null;
+}
+function lev1(a, b) { // distância de edição <= 1?
+  if (a === b) return true;
+  if (Math.abs(a.length - b.length) > 1) return false;
+  let i = 0; while (i < a.length && a[i] === b[i]) i++;
+  if (a.length === b.length) return a.slice(i + 1) === b.slice(i + 1);
+  return a.length > b.length ? a.slice(i + 1) === b.slice(i) : a.slice(i) === b.slice(i + 1);
+}
+// grupos de tags que parecem ser a mesma: nome igual sem acento/pontuação, palavras trocadas de ordem,
+// apelido de outra tag, ou um erro de digitação (1 letra) em nomes longos
+async function similarTags() {
+  const db = await loadTags();
+  const names = Object.keys(db.tags);
+  const count = {};
+  for (const list of Object.values(db.items)) for (const t of list) count[t] = (count[t] || 0) + 1;
+  const parent = Object.fromEntries(names.map((n) => [n, n]));
+  const find = (x) => (parent[x] === x ? x : (parent[x] = find(parent[x])));
+  const join = (a, b) => { parent[find(a)] = find(b); };
+  const info = names.map((n) => {
+    const k = tagKey(n);
+    return { n, k, w: k.split(' ').sort().join(' '), al: (db.tags[n].aliases || []).map(tagKey) };
+  });
+  for (let i = 0; i < info.length; i++) {
+    for (let j = i + 1; j < info.length; j++) {
+      const a = info[i]; const b = info[j];
+      if (!a.k || !b.k) continue;
+      if (a.k === b.k || a.w === b.w || a.al.includes(b.k) || b.al.includes(a.k) || (a.k.length >= 6 && b.k.length >= 6 && lev1(a.k, b.k))) join(a.n, b.n);
+    }
+  }
+  const groups = {};
+  for (const n of names) (groups[find(n)] = groups[find(n)] || []).push(n);
+  return {
+    groups: Object.values(groups).filter((g) => g.length > 1)
+      .map((g) => g.map((n) => ({ name: n, count: count[n] || 0, person: !!db.tags[n].person })).sort((a, b) => b.count - a.count || ptSort(a.name, b.name)))
+      .sort((a, b) => ptSort(a[0].name, b[0].name)),
+  };
+}
+// juntar tags: os itens de "from" passam a ter "into"; os nomes antigos viram apelidos de "into"
+async function mergeTags({ from, into }) {
+  const db = await loadTags();
+  into = cleanTagName(into);
+  if (!db.tags[into]) throw new HttpError(404, 'Tag de destino não encontrada');
+  const src = [...new Set((from || []).map(cleanTagName))].filter((f) => f !== into && db.tags[f]);
+  if (!src.length) throw new HttpError(400, 'Escolha as tags para juntar');
+  const dst = db.tags[into];
+  const aliases = new Set(dst.aliases || []);
+  for (const f of src) {
+    const v = db.tags[f];
+    if (v.person) dst.person = true;
+    for (const a of [f, ...(v.aliases || [])]) if (tagKey(a) !== tagKey(into)) aliases.add(a);
+    for (const [k, list] of Object.entries(db.items)) {
+      if (!list.includes(f)) continue;
+      db.items[k] = [...new Set(list.map((t) => (t === f ? into : t)))].sort(ptSort);
+    }
+    delete db.tags[f];
+    await peopleTagRenamed(f, into);
+  }
+  if (aliases.size) dst.aliases = [...aliases].slice(0, 30);
+  await saveTags();
+  return { ok: true, merged: src.length, into, ...(await listTags()) };
+}
 async function listTags() {
   const db = await loadTags();
   const count = {};
@@ -903,7 +973,7 @@ async function listTags() {
 async function assignTags({ paths, add = [], remove = [] }) {
   const db = await loadTags();
   if (!Array.isArray(paths) || !paths.length) throw new HttpError(400, 'Nenhum item selecionado');
-  add = add.map(cleanTagName); remove = remove.map(cleanTagName);
+  add = add.map((t) => findTag(db, cleanTagName(t)) || cleanTagName(t)); remove = remove.map(cleanTagName);
   for (const t of add) if (!db.tags[t]) db.tags[t] = { color: TAG_COLORS[Object.keys(db.tags).length % TAG_COLORS.length] };
   for (const raw of paths) {
     const rel = relOf(resolveSafe(raw));
@@ -930,7 +1000,7 @@ async function editTag({ name, newName, color, remove, person, aliases }) {
     if (Array.isArray(aliases)) db.tags[name].aliases = [...new Set(aliases.map((a) => String(a).replace(/\s+/g, ' ').trim().slice(0, 60)).filter(Boolean))].slice(0, 20);
     if (newName && cleanTagName(newName) !== name) {
       const nn = cleanTagName(newName);
-      if (db.tags[nn]) throw new HttpError(409, 'Já existe uma tag com esse nome');
+      if (db.tags[nn]) throw new HttpError(409, `Já existe a tag “${nn}”: use “Juntar com outra tag”`);
       db.tags[nn] = db.tags[name]; delete db.tags[name];
       for (const [k, list] of Object.entries(db.items)) db.items[k] = [...new Set(list.map((t) => (t === name ? nn : t)))].sort(ptSort);
       await peopleTagRenamed(name, nn);
@@ -1569,7 +1639,7 @@ async function applySuggestions(pairs) {
   return { ok: true, applied: n, ...(await listTags()) };
 }
 async function ensurePersonTag(name) {
-  const db = await loadTags(); const t = cleanTagName(name);
+  const db = await loadTags(); const t = findTag(db, cleanTagName(name)) || cleanTagName(name);
   if (!db.tags[t]) db.tags[t] = { color: TAG_COLORS[Object.keys(db.tags).length % TAG_COLORS.length] };
   db.tags[t].person = true;
   await saveTags();
@@ -1839,8 +1909,10 @@ const server = http.createServer(async (req, res) => {
       case '/api/tags': {
         if (req.method === 'POST') {
           await requireAdmin(req); const body = await readBody(req);
-          return sendJSON(res, q.get('action') === 'edit' ? await editTag(body) : await assignTags(body));
+          const act = q.get('action');
+          return sendJSON(res, act === 'edit' ? await editTag(body) : act === 'merge' ? await mergeTags(body) : await assignTags(body));
         }
+        if (q.get('similar')) { await requireAdminGet(req); return sendJSON(res, await similarTags()); }
         if (q.get('tag')) return sendJSON(res, await itemsWithTag(q.get('tag')));
         return sendJSON(res, await listTags());
       }

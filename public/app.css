@@ -847,3 +847,5 @@ body.cf-light .thumb video.pv.on, body.cf-strong .thumb video.pv.on { opacity: .
 .side-h.tags-fold { width: 100%; }
 .tf-label.tags-fold { border-radius: 8px; padding: 2px 4px 2px 0; }
 .tag-home-h { font-size: 16px; font-weight: 700; padding: 4px 16px 8px; color: var(--text); }
+.tag-sim { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; padding: 12px 20px 4px; border-top: 1px solid rgba(255,255,255,.06); }
+.tag-sim small { color: var(--muted); font-size: 12px; margin-right: 6px; }

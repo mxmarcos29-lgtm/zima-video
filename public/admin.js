@@ -26,6 +26,13 @@ const Tags = {
   async load() {
     try { const r = await api('tags'); this.apply(r); } catch { /* sem tags */ }
   },
+  // mesmo critério do servidor: sem maiúsculas, acentos e pontuação; apelidos de pessoa contam
+  key(n) { return norm(String(n || '')).replace(/[^a-z0-9]+/g, ' ').trim(); },
+  match(n) {
+    const k = this.key(n); if (!k) return null;
+    const t = this.list.find((x) => this.key(x.name) === k) || this.list.find((x) => (x.aliases || []).some((a) => this.key(a) === k));
+    return t ? t.name : null;
+  },
   sortNames(arr) { return arr.slice().sort((a, b) => collator.compare(a, b)); },
   apply(r) {
     this.list = (r.tags || []).slice().sort((a, b) => collator.compare(a.name, b.name));
@@ -137,6 +144,7 @@ const Tags = {
       return n === 0 ? 'off' : n === items.length ? 'on' : 'mixed';
     };
     const apply = async (add, remove) => {
+      add = add.map((t) => this.match(t) || t); // "maria souza" usa a tag "Maria Souza" que já existe
       try {
         const r = await apiPost('tags', null, { paths, add, remove });
         this.apply(r);
@@ -152,7 +160,9 @@ const Tags = {
       const box = ui.list; box.innerHTML = '';
       const ql = norm(q.trim());
       const shown = ql ? this.list.filter((t) => norm(t.name).includes(ql)) : this.list;
-      const exact = this.list.some((t) => norm(t.name) === ql);
+      const same = q.trim() ? this.match(q.trim()) : null;
+      const exact = !!same;
+      if (same && !shown.some((t) => t.name === same)) shown.unshift(this.list.find((t) => t.name === same));
       if (q.trim() && !exact) {
         const c = el('button', 'row tag-create', `${icon('add')}<span class="lbl">Criar tag “${esc(q.trim())}”</span>`);
         c.onclick = () => { const v = q.trim(); q = ''; ui.input.value = ''; apply([v], []); };
@@ -197,6 +207,78 @@ const Tags = {
       if (!IS_TOUCH) setTimeout(() => input.focus(), 60);
     });
   },
+  // ---------- juntar tags
+  async mergeRun(from, into, done) {
+    try {
+      const r = await apiPost('tags', { action: 'merge' }, { from, into });
+      this.apply(r);
+      for (const f of from) if (this.filter.delete(f)) this.filter.add(into);
+      toast(`${from.map((f) => `“${f}”`).join(', ')} juntada(s) em “${into}”`);
+      if (B.tagView && from.includes(B.tagView)) { Sheet.close(); whenHistoryIdle(() => this.openView(into, false)); return; }
+      B.load(B.path, false);
+      if (done) done(); else Sheet.close();
+    } catch (e) { toast(e.message); }
+  },
+  // escolhe a tag que fica: as parecidas aparecem primeiro
+  async mergePick(t, back) {
+    let sim = [];
+    try { sim = ((await api('tags', { similar: 1 })).groups.find((g) => g.some((x) => x.name === t.name)) || []).map((x) => x.name).filter((n) => n !== t.name); } catch { /* sem sugestões */ }
+    let q = '';
+    Sheet.open((b) => {
+      b.classList.add('move-sheet');
+      const top = el('div', 'move-top');
+      const h = el('h3'); h.textContent = `Juntar “${t.name}” com…`;
+      const sb = el('div', 'move-search');
+      sb.innerHTML = `${icon('search')}<input type="search" maxlength="40" placeholder="Buscar tag…" autocomplete="off">`;
+      const input = $('input', sb);
+      top.append(h, sb, el('div', 'sheet-note tag-hint', `Escolha a tag que fica. Os itens de “${t.name}” passam para ela e “${t.name}” vira um apelido dela (a busca pelo nome continua achando).`));
+      const list = el('div', 'move-list');
+      const render = () => {
+        list.innerHTML = '';
+        const ql = norm(q.trim());
+        const others = this.list.filter((x) => x.name !== t.name && (!ql || norm(x.name).includes(ql)));
+        others.sort((a, c) => (sim.includes(c.name) - sim.includes(a.name)) || collator.compare(a.name, c.name));
+        for (const x of others) {
+          const r = el('button', 'row');
+          r.innerHTML = `<i class="tag-dot" style="background:${x.color}"></i><span class="lbl">${esc(x.name)}</span>${sim.includes(x.name) ? '<span class="val">parecida</span>' : ''}<span class="val">${x.count}</span>`;
+          r.onclick = () => this.mergeConfirm([t.name], x.name, back);
+          list.appendChild(r);
+        }
+        if (!others.length) list.appendChild(el('div', 'sheet-note', 'Nenhuma outra tag.'));
+      };
+      input.addEventListener('input', () => { q = input.value; render(); });
+      if (back) { const bb = el('button', 'icon-btn', icon('back')); bb.onclick = back; top.prepend(bb); }
+      b.append(top, list); render();
+      if (!IS_TOUCH) setTimeout(() => input.focus(), 60);
+    });
+  },
+  mergeConfirm(from, into, back) {
+    const n = from.reduce((a, f) => a + ((this.list.find((x) => x.name === f) || {}).count || 0), 0);
+    Sheet.open((b) => {
+      Sheet.header(b, 'Juntar tags', back);
+      b.appendChild(el('div', 'sheet-note', `${from.map((f) => `“${esc(f)}”`).join(', ')} (${n} item(ns)) vai(ão) para “${esc(into)}”. ${from.length > 1 ? 'Os nomes antigos viram apelidos.' : 'O nome antigo vira apelido.'}`));
+      Sheet.row(b, { ico: 'check', label: `Juntar em “${into}”`, onClick: () => this.mergeRun(from, into) });
+      Sheet.row(b, { ico: 'close', label: 'Cancelar', onClick: () => (back ? back() : Sheet.close()) });
+    });
+  },
+  // lista de grupos de tags parecidas (provavelmente duplicadas)
+  async similarSheet() {
+    let groups = [];
+    try { groups = (await api('tags', { similar: 1 })).groups; } catch (e) { toast(e.message); return; }
+    Sheet.open((b) => {
+      Sheet.header(b, 'Tags parecidas');
+      if (!groups.length) { b.appendChild(el('div', 'sheet-note', 'Nenhuma tag parecida. Tudo organizado!')); return; }
+      b.appendChild(el('div', 'sheet-note', 'Tags que parecem ser a mesma (maiúsculas, acentos, pontuação, palavras trocadas, apelidos ou uma letra diferente). Toque na que deve ficar para juntar as outras nela.'));
+      for (const g of groups) {
+        const box = el('div', 'tag-sim');
+        box.innerHTML = g.map((x) => `${this.chip(x.name)}<small>${x.count}</small>`).join('');
+        b.appendChild(box);
+        for (const x of g) {
+          Sheet.row(b, { ico: 'tag', label: `Manter “${x.name}”`, value: `juntar ${g.length - 1}`, onClick: () => this.mergeConfirm(g.filter((y) => y.name !== x.name).map((y) => y.name), x.name, () => this.similarSheet()) });
+        }
+      }
+    });
+  },
   manage(t, back) {
     Sheet.open((b) => {
       Sheet.header(b, t.name, back);
@@ -214,6 +296,7 @@ const Tags = {
       if (t.person) Sheet.row(b, { ico: 'edit', label: 'Outras formas do nome', value: (t.aliases || []).join(', ') || 'nenhuma', onClick: () => Admin.prompt(`Outros nomes de ${t.name} (separe por vírgula)`, (t.aliases || []).join(', '), async (v) => {
         try { const aliases = v.split(',').map((x) => x.trim()).filter(Boolean); this.apply(await apiPost('tags', { action: 'edit' }, { name: t.name, aliases })); t.aliases = aliases; } catch (e) { toast(e.message); }
       }) });
+      Sheet.row(b, { ico: 'tag', label: 'Juntar com outra tag…', chevron: true, onClick: () => this.mergePick(t, () => this.manage(t, back)) });
       Sheet.row(b, { ico: 'edit', label: 'Renomear tag', onClick: () => Admin.prompt('Renomear tag', t.name, async (v) => {
         try { this.apply(await apiPost('tags', { action: 'edit' }, { name: t.name, newName: v })); B.load(B.path, false); if (back) back(); } catch (e) { toast(e.message); }
       }) });
@@ -730,6 +813,7 @@ const Admin = {
     this.readonlyNote(b);
     Sheet.row(b, { ico: 'check', label: 'Selecionar itens', onClick: () => { Sheet.close(); this.enter(); this.updateBar(); } });
     Sheet.row(b, { ico: 'check', label: 'Selecionar tudo desta pasta', onClick: () => { Sheet.close(); this.enter(); this.setSel(this.items(), true); } });
+    Sheet.row(b, { ico: 'tag', label: 'Tags parecidas (juntar duplicadas)', chevron: true, onClick: () => Tags.similarSheet() });
     Sheet.row(b, { ico: 'person', label: 'Pessoas (reconhecer pelo nome e pelo rosto)', chevron: true, onClick: () => { Sheet.close(); whenHistoryIdle(() => People.show()); } });
     if (!B.tagView) Sheet.row(b, { ico: 'add', label: 'Nova pasta aqui', onClick: () => this.newFolder() });
     Sheet.row(b, { ico: 'delete', label: 'Lixeira', onClick: () => this.trash() });
