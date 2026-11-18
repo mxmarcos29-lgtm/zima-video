@@ -56,7 +56,10 @@ const People = (() => {
 
   // ================================================================ por rosto
   async function renderFaces(body) {
+    // as perguntas vêm primeiro: o cruzamento com as tags pode aprender rostos e mudar grupos/sugestões
+    const qs0 = await api('people/questions').catch(() => ({ questions: [], learned: 0, auto: 0 }));
     const [st, cl, sg] = await Promise.all([api('people/status'), api('people/clusters'), api('people/suggestions')]);
+    if (qs0.learned) toast(`Aprendi ${qs0.learned} rosto(s) a partir das tags dos vídeos`);
     await Tags.load();
     body.innerHTML = '';
 
@@ -77,6 +80,10 @@ const People = (() => {
     btns.appendChild(exb);
     card.appendChild(btns);
     body.appendChild(card);
+
+    // --- perguntas do cruzamento tags x rostos
+    if (qs0.questions.length) body.appendChild(questionsSection(qs0));
+    else if (qs0.auto) body.appendChild(el('div', 'pp-note pp-learned', `${icon('check')} ${qs0.auto} rosto(s) aprendidos sozinhos a partir das tags que os vídeos já tinham.`));
 
     // --- sugestões por rosto
     const sug = sg.suggestions;
@@ -159,15 +166,55 @@ const People = (() => {
   }
 
   // rostos de referência de uma pessoa (dá para remover um que foi marcado por engano)
+  function questionsSection(qd) {
+    const sec = el('section', 'pp-sec pp-qs');
+    sec.appendChild(el('h2', '', `Perguntas <small>${qd.total}</small>`));
+    sec.appendChild(el('div', 'pp-note', 'Cruzei as tags que os vídeos já têm (manuais ou pelo nome do arquivo) com os rostos encontrados. Onde não tive certeza, preciso da sua ajuda — cada resposta ensina e costuma resolver vários vídeos de uma vez.'));
+    for (const q of qd.questions) {
+      const card = el('div', 'pp-q');
+      const title = q.kind === 'isperson'
+        ? `“${esc(q.tag)}” é uma pessoa? É este rosto?`
+        : `Quem é ${Tags.chip(q.tag)} neste vídeo?`;
+      card.innerHTML = `<div class="pp-q-h">${title}</div><div class="pp-q-v">${esc(stripExt(q.name))}</div><div class="pp-note">${esc(q.reason)}${q.more ? ` · mais ${q.more} vídeo(s) com a mesma dúvida` : ''}</div>`;
+      const opts = el('div', 'pp-q-opts');
+      const send = async (body, msg) => {
+        card.classList.add('busy');
+        try { const r = await apiPost('people/answer', null, { tag: q.tag, path: q.path, ...body }); if (r.tags) Tags.apply(r); if (msg) toast(msg); render(); }
+        catch (e) { card.classList.remove('busy'); toast(e.message); }
+      };
+      for (const o of q.options) {
+        const b = el('button', 'pp-q-opt');
+        b.innerHTML = `<div class="pp-faces">${o.faces.map((id) => `<img src="${crop(id)}" alt="" loading="lazy">`).join('')}</div><span>${q.kind === 'isperson' ? `Sim, é ${esc(q.tag)}` : 'É esta pessoa'}</span>${o.seen ? `<small>aparece em ${o.seen} outro(s) vídeo(s) com a tag</small>` : ''}`;
+        b.onclick = () => send({ faces: o.all }, `Aprendido: ${q.tag}`);
+        opts.appendChild(b);
+      }
+      card.appendChild(opts);
+      const acts = el('div', 'pp-actions');
+      if (q.kind === 'isperson') {
+        const no = el('button', 'btn', 'Não é uma pessoa'); no.onclick = () => send({ notPerson: true });
+        acts.appendChild(no);
+      } else {
+        const none = el('button', 'btn', `${esc(q.tag)} não aparece`); none.onclick = () => send({ none: true });
+        const open1 = el('button', 'btn', `${icon('play')}Ver o vídeo`); open1.onclick = () => { close(); whenHistoryIdle(() => P.open({ path: q.path, name: q.name, type: 'video' })); };
+        acts.append(none, open1);
+      }
+      card.appendChild(acts);
+      sec.appendChild(card);
+    }
+    return sec;
+  }
+
   async function personSheet(t) {
     const r = await api('people/person', { tag: t.name });
     Sheet.open((b) => {
       Sheet.header(b, t.name);
       Sheet.row(b, { ico: 'tag', label: 'Ver vídeos desta pessoa', onClick: () => { Sheet.close(); close(); whenHistoryIdle(() => Tags.openView(t.name)); } });
-      b.appendChild(el('div', 'sheet-note', 'Rostos usados para reconhecer esta pessoa. Toque num rosto para removê-lo se estiver errado.'));
+      b.appendChild(el('div', 'sheet-note', 'Rostos usados para reconhecer esta pessoa (“auto” = aprendido pelas tags dos vídeos). Toque num rosto para removê-lo se estiver errado — ele não será aprendido de novo.'));
       const faces = el('div', 'pp-sheet-faces');
       for (const id of r.faces) {
-        const im = el('button', 'pp-ref', `<img src="${crop(id)}" alt=""><span>${icon('close')}</span>`);
+        const auto = (r.auto || []).includes(id);
+        const im = el('button', 'pp-ref' + (auto ? ' auto' : ''), `<img src="${crop(id)}" alt=""><span>${icon('close')}</span>${auto ? '<em>auto</em>' : ''}`);
+        if (auto) im.title = 'Aprendido sozinho pelas tags dos vídeos';
         im.onclick = async () => { await apiPost('people/unlink', null, { tag: t.name, faces: [id] }); im.remove(); };
         faces.appendChild(im);
       }

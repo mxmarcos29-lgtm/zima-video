@@ -1455,7 +1455,9 @@ fs.mkdirSync(path.join(PEOPLE_DIR, 'c'), { recursive: true });
 
 const faceVideos = new Map(); // path -> { key, at, frames, faces: [{ id, t, score, n, emb: Float32Array }] }
 const faceById = new Map();   // id -> { path, face }
-let peopleDb = { refs: {}, ignored: {}, excluded: [] }; // refs: tag -> [faceId]; ignored: faceId -> 1; excluded: pastas fora da análise de rosto
+let peopleDb = { refs: {}, ignored: {}, excluded: [], auto: {}, answered: {}, blocked: {}, notPerson: {} };
+// auto: faceId -> tag (aprendido sozinho pelas tags); answered: 'path|tag' -> resposta do usuário;
+// blocked: 'tag|faceId' -> rosto que o usuário disse não ser a pessoa; notPerson: tag -> 1 (não perguntar se é pessoa) // refs: tag -> [faceId]; ignored: faceId -> 1; excluded: pastas fora da análise de rosto
 // pasta (ou algo dentro dela) excluída da análise de rosto?
 const faceExcluded = (rel) => peopleDb.excluded.some((x) => rel === x || rel.startsWith(x + '/'));
 let clusterCache = null;
@@ -1483,7 +1485,7 @@ function indexFaces(rel, rec) {
       }
     }
   } catch { /* sem dados */ }
-  try { const j = JSON.parse(fs.readFileSync(PEOPLE_FILE, 'utf8')); peopleDb = { refs: j.refs || {}, ignored: j.ignored || {}, excluded: j.excluded || [] }; } catch { /* vazio */ }
+  try { const j = JSON.parse(fs.readFileSync(PEOPLE_FILE, 'utf8')); peopleDb = { refs: j.refs || {}, ignored: j.ignored || {}, excluded: j.excluded || [], auto: j.auto || {}, answered: j.answered || {}, blocked: j.blocked || {}, notPerson: j.notPerson || {} }; } catch { /* vazio */ }
 })();
 async function saveFaceVideo(rel, rec) {
   const file = videoFile(rel);
@@ -1492,7 +1494,20 @@ async function saveFaceVideo(rel, rec) {
 }
 const savePeople = () => { clusterCache = null; return saveJSON(PEOPLE_FILE, peopleDb); };
 async function peopleTagRenamed(from, to) {
-  if (!peopleDb.refs[from]) return;
+  // respostas ('caminho|tag') e bloqueios ('tag|rosto') acompanham a tag renomeada/juntada
+  for (const key of Object.keys(peopleDb.answered)) {
+    const i = key.lastIndexOf('|'); if (key.slice(i + 1) !== from) continue;
+    const v = peopleDb.answered[key]; delete peopleDb.answered[key];
+    if (to) peopleDb.answered[`${key.slice(0, i)}|${to}`] = v;
+  }
+  for (const key of Object.keys(peopleDb.blocked)) {
+    const i = key.lastIndexOf('|'); if (key.slice(0, i) !== from) continue;
+    delete peopleDb.blocked[key];
+    if (to) peopleDb.blocked[`${to}|${key.slice(i + 1)}`] = 1;
+  }
+  for (const [id, t] of Object.entries(peopleDb.auto)) if (t === from) { if (to) peopleDb.auto[id] = to; else delete peopleDb.auto[id]; }
+  delete peopleDb.notPerson[from];
+  if (!peopleDb.refs[from]) { await savePeople(); return; }
   if (to) peopleDb.refs[to] = [...new Set([...(peopleDb.refs[to] || []), ...peopleDb.refs[from]])];
   delete peopleDb.refs[from];
   await savePeople();
@@ -1502,6 +1517,15 @@ async function peopleRelocate(pairs, removed = []) {
   const map = (p) => { for (const [a, b] of pairs) { if (p === a) return b; if (p.startsWith(a + '/')) return b + p.slice(a.length); } return null; };
   const ex = peopleDb.excluded.map((x) => map(x) ?? x).filter((x) => !removed.some((a) => x === a || x.startsWith(a + '/')));
   if (ex.join('\n') !== peopleDb.excluded.join('\n')) { peopleDb.excluded = ex; await savePeople(); }
+  let moved = false;
+  for (const key of Object.keys(peopleDb.answered)) {
+    const i = key.lastIndexOf('|'); const p = key.slice(0, i); const n = map(p);
+    const gone = removed.some((x) => p === x || p.startsWith(x + '/'));
+    if (n === null && !gone) continue;
+    const v = peopleDb.answered[key]; delete peopleDb.answered[key]; moved = true;
+    if (n !== null) peopleDb.answered[`${n}|${key.slice(i + 1)}`] = v;
+  }
+  if (moved) await savePeople();
   for (const [rel, rec] of [...faceVideos.entries()]) {
     const n = map(rel);
     const gone = removed.some((a) => rel === a || rel.startsWith(a + '/'));
@@ -1660,6 +1684,154 @@ async function ignoreFaces({ faces }) {
   await savePeople();
   return { ok: true };
 }
+// ===================================================================== cruzamento: tags x rostos
+// Os vídeos que já têm a tag de uma pessoa (manual ou pelo nome do arquivo) ensinam como ela é:
+//  - o rosto que se repete nos vídeos com a tag (e não é de outra pessoa conhecida) é aprendido sozinho;
+//  - se o vídeo tem várias pessoas e não dá para saber qual é, vira uma pergunta;
+//  - tag comum (não marcada como pessoa) cujos vídeos têm sempre o mesmo rosto: pergunta se é uma pessoa.
+const LEARN_SAMPLE = 80;      // vídeos por pessoa usados para comparar
+const LEARN_MAX_REFS = 40;    // limite de rostos de referência por pessoa
+const LEARN_SURE = 0.5;       // semelhança para reforçar a referência com um vídeo novo
+function videoGroups(rel) {
+  const rec = faceVideos.get(rel);
+  if (!rec || rec.status === 'failed' || !rec.faces.length) return null;
+  const by = new Map();
+  for (const f of rec.faces) {
+    const k = f.g != null ? 'g' + f.g : f.id;
+    if (!by.has(k)) by.set(k, { faces: [], sum: new Float32Array(512), n: 0 });
+    const g = by.get(k); g.faces.push(f); g.n = Math.max(g.n, f.n || 1);
+    for (let i = 0; i < 512; i++) g.sum[i] += f.emb[i];
+  }
+  return [...by.values()].map((g) => {
+    let nn = 0; for (let i = 0; i < 512; i++) nn += g.sum[i] * g.sum[i]; nn = Math.sqrt(nn) || 1;
+    const mean = g.sum.map((x) => x / nn);
+    g.faces.sort((a, b) => b.score - a.score);
+    return { faces: g.faces, ids: g.faces.map((f) => f.id), mean, n: g.n };
+  });
+}
+const refSim = (mean, embs) => { let m = -1; for (const e of embs) { const x = dot(mean, e); if (x > m) m = x; } return m; };
+let learnTimer = null; let learnLast = null;
+function scheduleLearn() { clearTimeout(learnTimer); learnTimer = setTimeout(() => learnFromTags().catch((e) => console.error('learn', e)), 4000); }
+async function learnFromTags() {
+  const db = await loadTags();
+  const byTag = {};
+  for (const [rel, list] of Object.entries(db.items)) {
+    if (faceExcluded(rel) || !faceVideos.has(rel)) continue;
+    for (const t of list) if (db.tags[t]) (byTag[t] = byTag[t] || []).push(rel);
+  }
+  const gcache = new Map();
+  const groupsOf = (rel) => { if (!gcache.has(rel)) gcache.set(rel, videoGroups(rel)); return gcache.get(rel); };
+  const learned = []; const questions = [];
+  const addRefs = (tag, g, max) => {
+    const cur = new Set(peopleDb.refs[tag] || []);
+    if (cur.size >= LEARN_MAX_REFS) return 0;
+    let n = 0;
+    for (const f of g.faces) {
+      if (n >= max || cur.size >= LEARN_MAX_REFS) break;
+      if (cur.has(f.id) || peopleDb.ignored[f.id] || peopleDb.blocked[`${tag}|${f.id}`]) continue;
+      cur.add(f.id); peopleDb.auto[f.id] = tag; n++;
+    }
+    peopleDb.refs[tag] = [...cur];
+    return n;
+  };
+  const persons = Object.keys(byTag).filter((t) => db.tags[t].person);
+  // duas passadas: a primeira aprende o que é certo; a segunda usa o aprendido para resolver o resto
+  for (let pass = 0; pass < 2; pass++) {
+    const refs = personRefs();
+    const refMap = Object.fromEntries(refs.map((r) => [r.tag, r.embs]));
+    for (const tag of persons) {
+      const vids = byTag[tag].slice(-LEARN_SAMPLE);
+      const others = refs.filter((r) => r.tag !== tag);
+      for (const rel of vids) {
+        const groups = groupsOf(rel); if (!groups) continue;
+        const ans = peopleDb.answered[`${rel}|${tag}`];
+        if (ans) continue; // usuário já respondeu
+        // tira rostos que são claramente de outra pessoa conhecida ou que o usuário disse não ser esta
+        const cand = groups.filter((g) => {
+          if (g.ids.every((id) => peopleDb.ignored[id] || peopleDb.blocked[`${tag}|${id}`])) return false;
+          const mine = refMap[tag] ? refSim(g.mean, refMap[tag]) : -1;
+          const o = others.length ? Math.max(...others.map((r) => refSim(g.mean, r.embs))) : -1;
+          return !(o >= FACE_MATCH && o > mine);
+        });
+        if (!cand.length) continue;
+        // 1) já conhece a pessoa: confere qual rosto é ela
+        if (refMap[tag]) {
+          const sims = cand.map((g) => refSim(g.mean, refMap[tag]));
+          const bi = sims.indexOf(Math.max(...sims));
+          if (sims[bi] >= FACE_MATCH) {
+            const has = cand[bi].ids.some((id) => (peopleDb.refs[tag] || []).includes(id));
+            if (!has && sims[bi] >= LEARN_SURE && pass === 0 && addRefs(tag, cand[bi], 1)) learned.push({ tag, path: rel });
+            continue;
+          }
+        }
+        // 2) não conhece (ou não achou): o rosto que se repete nos outros vídeos com a mesma tag
+        const support = cand.map((g) => {
+          let c = 0;
+          for (const u of vids) {
+            if (u === rel) continue;
+            const gu = groupsOf(u); if (!gu) continue;
+            if (gu.some((h) => dot(g.mean, h.mean) >= FACE_CLUSTER)) c++;
+          }
+          return c;
+        });
+        const order = cand.map((g, i) => i).sort((a, b) => support[b] - support[a] || cand[b].n - cand[a].n);
+        const top = order[0]; const second = order[1];
+        const sure = cand.length === 1
+          ? (support[top] >= 1 || vids.length === 1 || cand[top].n >= 3)
+          : support[top] >= 1 && support[top] > (second != null ? support[second] : -1) * 2 && support[top] >= 2;
+        if (sure && pass === 0) {
+          if (addRefs(tag, cand[top], 2)) learned.push({ tag, path: rel });
+        } else if (!sure && pass === 1) {
+          questions.push({
+            kind: 'who', tag, path: rel, name: path.posix.basename(rel),
+            reason: cand.length > 1 ? `Há ${cand.length} pessoas neste vídeo e não sei qual é ${tag}` : `Não tenho certeza se este rosto é ${tag}`,
+            options: order.slice(0, 6).map((i) => ({ faces: cand[i].ids.slice(0, 4), all: cand[i].ids, n: cand[i].n, seen: support[i] })),
+          });
+        }
+      }
+    }
+  }
+  // tags comuns cujos vídeos têm sempre o mesmo rosto: talvez seja uma pessoa
+  const refsNow = personRefs();
+  for (const [tag, vids0] of Object.entries(byTag)) {
+    if (db.tags[tag].person || peopleDb.notPerson[tag]) continue;
+    const vids = vids0.slice(-LEARN_SAMPLE).filter((r) => groupsOf(r));
+    if (vids.length < 3) continue;
+    let best = null;
+    for (const rel of vids) {
+      for (const g of groupsOf(rel)) {
+        if (refsNow.length && bestPerson(g.mean, refsNow).sim >= FACE_MATCH) continue; // já é outra pessoa
+        let c = 1;
+        for (const u of vids) if (u !== rel && groupsOf(u).some((h) => dot(g.mean, h.mean) >= FACE_CLUSTER)) c++;
+        if (!best || c > best.c || (c === best.c && g.n > best.g.n)) best = { c, g, rel };
+      }
+    }
+    if (best && best.c >= Math.max(3, Math.ceil(vids.length * 0.6))) {
+      questions.push({ kind: 'isperson', tag, path: best.rel, name: path.posix.basename(best.rel), reason: `O mesmo rosto aparece em ${best.c} de ${vids.length} vídeos com a tag “${tag}”`, options: [{ faces: best.g.ids.slice(0, 4), all: best.g.ids, n: best.g.n, seen: best.c }] });
+    }
+  }
+  if (learned.length) await savePeople();
+  learnLast = { at: Date.now(), learned: learned.length, questions };
+  return learnLast;
+}
+// resposta do usuário a uma pergunta: { tag, path, faces } = este rosto é a pessoa; { none } = não aparece; { notPerson } = a tag não é pessoa
+async function answerQuestion({ tag, path: p, faces, none, notPerson }) {
+  const db = await loadTags();
+  if (!db.tags[tag]) throw new HttpError(404, 'Tag não encontrada');
+  const rel = p ? relOf(resolveSafe(p)) : '';
+  if (notPerson) { peopleDb.notPerson[tag] = 1; await savePeople(); return { ok: true }; }
+  if (none) { peopleDb.answered[`${rel}|${tag}`] = 'none'; await savePeople(); return { ok: true }; }
+  const ids = (faces || []).filter((id) => faceById.has(id));
+  if (!ids.length) throw new HttpError(400, 'Escolha um rosto');
+  if (!db.tags[tag].person) { db.tags[tag].person = true; await saveTags(); }
+  const best = ids.map((id) => faceById.get(id).face).sort((a, b) => b.score - a.score).slice(0, 3).map((f) => f.id);
+  peopleDb.refs[tag] = [...new Set([...(peopleDb.refs[tag] || []), ...best])];
+  for (const id of best) { delete peopleDb.ignored[id]; delete peopleDb.auto[id]; delete peopleDb.blocked[`${tag}|${id}`]; }
+  if (rel) peopleDb.answered[`${rel}|${tag}`] = 'faces';
+  await savePeople();
+  return { ok: true, ...(await listTags()) };
+}
+
 async function peopleStatus() {
   const idx = await getIndex();
   const all = idx.filter((it) => it.t === 'video');
@@ -1774,6 +1946,7 @@ async function workerResult(body) {
   indexFaces(rel, rec);
   await saveFaceVideo(rel, rec);
   workerJobs.delete(rel);
+  scheduleLearn();
   return { ok: true, faces: faces.length };
 }
 
@@ -1920,6 +2093,19 @@ const server = http.createServer(async (req, res) => {
       case '/api/people/status': await requireAdminGet(req); return sendJSON(res, await peopleStatus());
       case '/api/people/names': await requireAdmin(req); return sendJSON(res, await nameSuggestions((await readBody(req)).scope || ''));
       case '/api/people/apply': await requireAdmin(req); return sendJSON(res, await applySuggestions((await readBody(req)).pairs));
+      case '/api/people/questions': {
+        await requireAdminGet(req);
+        const r = await learnFromTags();
+        // uma pergunta por pessoa (a mais fácil): a resposta costuma resolver os outros vídeos dela sozinha
+        const one = new Map();
+        for (const qq of r.questions) {
+          const k = qq.kind + '|' + qq.tag; const cur = one.get(k);
+          if (!cur) one.set(k, { ...qq, more: 0 });
+          else { cur.more++; if (qq.options.length < cur.options.length) one.set(k, { ...qq, more: cur.more }); }
+        }
+        return sendJSON(res, { learned: r.learned, questions: [...one.values()].slice(0, 100), total: r.questions.length, auto: Object.keys(peopleDb.auto).length });
+      }
+      case '/api/people/answer': await requireAdmin(req); return sendJSON(res, await answerQuestion(await readBody(req)));
       case '/api/people/clusters': await requireAdminGet(req); return sendJSON(res, { clusters: faceClusters().slice(0, 200) });
       case '/api/people/suggestions': await requireAdminGet(req); return sendJSON(res, { suggestions: await faceSuggestions() });
       case '/api/people/name': await requireAdmin(req); return sendJSON(res, await nameFaces(await readBody(req)));
@@ -1927,11 +2113,14 @@ const server = http.createServer(async (req, res) => {
       case '/api/people/person': {
         await requireAdminGet(req);
         const t = q.get('tag') || '';
-        return sendJSON(res, { tag: t, faces: (peopleDb.refs[t] || []).filter((id) => faceById.has(id)).slice(0, 60) });
+        const ids = (peopleDb.refs[t] || []).filter((id) => faceById.has(id)).slice(0, 60);
+        return sendJSON(res, { tag: t, faces: ids, auto: ids.filter((id) => peopleDb.auto[id]) });
       }
       case '/api/people/unlink': {
         await requireAdmin(req); const b = await readBody(req);
         peopleDb.refs[b.tag] = (peopleDb.refs[b.tag] || []).filter((id) => !(b.faces || []).includes(id));
+        // não reaprender este rosto para esta pessoa
+        for (const id of b.faces || []) { peopleDb.blocked[`${b.tag}|${id}`] = 1; delete peopleDb.auto[id]; }
         await savePeople(); return sendJSON(res, { ok: true });
       }
       case '/api/people/crop': {

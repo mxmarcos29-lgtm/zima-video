@@ -849,3 +849,15 @@ body.cf-light .thumb video.pv.on, body.cf-strong .thumb video.pv.on { opacity: .
 .tag-home-h { font-size: 16px; font-weight: 700; padding: 4px 16px 8px; color: var(--text); }
 .tag-sim { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; padding: 12px 20px 4px; border-top: 1px solid rgba(255,255,255,.06); }
 .tag-sim small { color: var(--muted); font-size: 12px; margin-right: 6px; }
+.pp-learned { display: flex; align-items: center; gap: 6px; margin: 4px 0 8px; }
+.pp-learned svg { width: 18px; height: 18px; fill: #2bb673; flex: none; }
+.pp-q { background: var(--surface); border-radius: var(--radius); padding: 14px 16px; margin-top: 10px; border-left: 3px solid var(--accent); transition: opacity .2s; }
+.pp-q.busy { opacity: .5; pointer-events: none; }
+.pp-q-h { font-size: 15px; font-weight: 600; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.pp-q-v { color: var(--muted); font-size: 13px; margin: 4px 0 2px; overflow-wrap: anywhere; }
+.pp-q-opts { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px; margin-top: 10px; }
+.pp-q-opt { display: flex; flex-direction: column; gap: 4px; background: var(--surface-2); border-radius: 10px; padding: 6px; text-align: left; border: 2px solid transparent; transition: border-color .15s; }
+.pp-q-opt:hover, .pp-q-opt:focus-visible { border-color: var(--accent); }
+.pp-q-opt span { font-size: 13px; font-weight: 600; padding: 2px 2px 0; }
+.pp-q-opt small { color: var(--muted); font-size: 11px; padding: 0 2px 2px; }
+.pp-ref em { position: absolute; left: 2px; bottom: 2px; font-style: normal; font-size: 10px; background: rgba(0,0,0,.7); color: #fff; border-radius: 4px; padding: 0 4px; }
