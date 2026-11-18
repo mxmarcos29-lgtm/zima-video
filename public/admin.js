@@ -14,6 +14,15 @@ async function apiPost(path, params, body) {
 // ===================================================================== tags
 const Tags = {
   list: [], colors: {}, filter: new Set(),
+  // menus de tags recolhíveis (lembra por lugar: barra lateral, início e filtro da pasta)
+  folded: store.get('tagsFolded', {}),
+  fold(where) { this.folded[where] = !this.folded[where]; store.set('tagsFolded', this.folded); },
+  foldHead(cls, where, html) {
+    const h = el('button', `${cls} tags-fold${this.folded[where] ? ' folded' : ''}`, `${html}${icon('down')}`);
+    h.setAttribute('aria-expanded', String(!this.folded[where]));
+    h.title = this.folded[where] ? 'Mostrar tags' : 'Recolher tags';
+    return h;
+  },
   async load() {
     try { const r = await api('tags'); this.apply(r); } catch { /* sem tags */ }
   },
@@ -39,8 +48,12 @@ const Tags = {
     if (B.tagView || !present.size) { bar.classList.add('hidden'); bar.innerHTML = ''; return; }
     bar.classList.remove('hidden');
     bar.innerHTML = '';
-    const lbl = el('span', 'tf-label', `${icon('tag')}Tags`); bar.appendChild(lbl);
+    const folded = this.folded.filter;
+    const lbl = this.foldHead('tf-label', 'filter', `${icon('tag')}Tags${folded ? ` <small>${this.filter.size ? `${this.filter.size} ativa(s)` : present.size}</small>` : ''}`);
+    lbl.onclick = () => { this.fold('filter'); this.renderFilterBar(); };
+    bar.appendChild(lbl);
     for (const name of [...present].sort((a, b) => collator.compare(a, b))) {
+      if (folded && !this.filter.has(name)) continue; // recolhido: só as tags em uso no filtro
       const b = el('button', 'tag tag-btn' + (this.filter.has(name) ? ' on' : ''), esc(name));
       b.style.setProperty('--c', this.colors[name] || '#888');
       b.onclick = () => { this.filter.has(name) ? this.filter.delete(name) : this.filter.add(name); B.render(); };
@@ -84,7 +97,12 @@ const Tags = {
     const box = $('#tag-home');
     if (B.path || B.tagView || !this.list.some((t) => t.count)) { box.classList.add('hidden'); return; }
     box.classList.remove('hidden');
+    const used = this.list.filter((x) => x.count);
+    const h = this.foldHead('tag-home-h', 'home', `Tags${this.folded.home ? ` <small>${used.length}</small>` : ''}`);
+    h.onclick = () => { this.fold('home'); this.renderHome(); };
+    box.querySelector('h2, .tag-home-h').replaceWith(h);
     const row = $('#tag-home-list'); row.innerHTML = '';
+    row.classList.toggle('hidden', !!this.folded.home);
     for (const t of this.list.filter((x) => x.count)) {
       const b = el('button', 'tag tag-btn', `${esc(t.name)}<small>${t.count}</small>`);
       b.style.setProperty('--c', t.color);
@@ -95,8 +113,11 @@ const Tags = {
   sideSection(box) {
     const used = this.list.filter((t) => t.count);
     if (!used.length) return;
-    box.appendChild(el('div', 'side-h', 'Tags'));
+    const h = this.foldHead('side-h', 'side', `Tags${this.folded.side ? ` <small>${used.length}</small>` : ''}`);
+    h.onclick = () => { this.fold('side'); Side.render(); };
+    box.appendChild(h);
     for (const t of used) {
+      if (this.folded.side && B.tagView !== t.name) continue; // recolhido: mantém só a tag aberta
       const b = el('button', 'side-link' + (B.tagView === t.name ? ' active' : ''));
       b.innerHTML = `<i class="tag-dot" style="background:${t.color}"></i><span>${esc(t.name)}</span><small>${t.count}</small>`;
       b.onclick = () => this.openView(t.name);

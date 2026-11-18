@@ -838,3 +838,12 @@ body.cf-light .thumb video.pv.on, body.cf-strong .thumb video.pv.on { opacity: .
 .pp-cand small { color: var(--muted); }
 .pp-sample { color: var(--muted); font-size: 11.5px; margin-top: 3px; overflow-wrap: anywhere; }
 .pp-steps a.btn { color: var(--text); text-decoration: none; }
+
+/* menus de tags recolhíveis */
+.tags-fold { display: flex; align-items: center; gap: 4px; cursor: pointer; text-align: left; }
+.tags-fold > svg:last-child { width: 18px; height: 18px; fill: currentColor; transition: transform .2s; opacity: .8; }
+.tags-fold.folded > svg:last-child { transform: rotate(-90deg); }
+.tags-fold small { font-weight: 500; opacity: .75; text-transform: none; letter-spacing: 0; }
+.side-h.tags-fold { width: 100%; }
+.tf-label.tags-fold { border-radius: 8px; padding: 2px 4px 2px 0; }
+.tag-home-h { font-size: 16px; font-weight: 700; padding: 4px 16px 8px; color: var(--text); }
