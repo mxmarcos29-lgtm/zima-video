@@ -346,10 +346,12 @@ const People = (() => {
           row.innerHTML = `<div><b>${esc(t.name)}</b> <small>em ${t.files} arquivo(s)</small> → ${Tags.chip(t.tag)}<div class="pp-sample">${t.sample.map(esc).join(' · ')}</div></div>`;
           const bx = el('div', 'pp-cand-b');
           const yes = el('button', 'btn primary', 'É a mesma pessoa');
-          yes.onclick = async () => { const res = await apiPost('people/alias', null, { tag: t.tag, alias: t.name }); Tags.apply(res); toast(`“${t.name}” agora também encontra ${t.tag}`); run(); };
+          yes.onclick = async () => { const res = await apiPost('people/alias', null, { tag: t.tag, alias: t.name, person: true }); Tags.apply(res); toast(`“${t.name}” agora também encontra ${t.tag}`); run(); };
           const no = el('button', 'btn', 'Não é');
           no.onclick = async () => { await apiPost('people/name-ignore', null, { names: [t.name] }); row.remove(); };
-          bx.append(yes, no); row.appendChild(bx); s3.appendChild(row);
+          const adj = el('button', 'btn', `${icon('edit')}Ajustar`);
+          adj.onclick = () => adjustSheet(t.name, () => run(), [t.name]);
+          bx.append(yes, adj, no); row.appendChild(bx); s3.appendChild(row);
         }
         out.appendChild(s3);
       }
@@ -373,7 +375,11 @@ const People = (() => {
         const no = el('button', 'btn', 'Não é nome');
         no.title = 'Não é uma pessoa — não sugerir de novo';
         no.onclick = async () => { await apiPost('people/name-ignore', null, { names: [n.name, ...n.variants.map((v) => v.name)] }); row.remove(); };
-        bx.append(mk, no); row.appendChild(bx); s2.appendChild(row);
+        const adj = el('button', 'btn', `${icon('edit')}Ajustar`); adj.title = 'Corrigir o nome (ex.: tirar uma palavra a mais)';
+        adj.onclick = () => adjustSheet(n.name, () => run(), [n.name, ...n.variants.map((v) => v.name)]);
+        const lk = el('button', 'btn', `${icon('tag')}É de outra tag`); lk.title = 'Este nome pertence a uma tag que já existe';
+        lk.onclick = () => linkToTag([n.name, ...n.variants.map((v) => v.name)], () => run());
+        bx.append(mk, adj, lk, no); row.appendChild(bx); s2.appendChild(row);
       }
       if (r.ignored) {
         const ig = el('button', 'pp-link', `${r.ignored} nome(s) marcado(s) como “não é nome” — ver/desfazer`);
@@ -451,6 +457,121 @@ const People = (() => {
       }
       if (!items.length) b.appendChild(el('div', 'sheet-note', 'Sem subpastas.'));
       for (const d of items) Sheet.row(b, { ico: 'folder', label: d.name, value: isExcluded(d.path, kind) ? 'excluída' : null, chevron: true, onClick: () => pickFolder(d.path, kind) });
+    });
+  }
+
+  // ajustar um nome encontrado (ex.: "Carlos Pereira Show" -> "Carlos Pereira") e conferir de novo:
+  // em quantos arquivos aparece, grafias parecidas e se já existe uma pessoa com nome igual/parecido
+  function adjustSheet(orig, after, oldNames = []) {
+    let res = null; const pickVar = new Set();
+    Sheet.open((b) => {
+      Sheet.header(b, 'Ajustar nome');
+      b.appendChild(el('div', 'sheet-note', `Encontrado como “${esc(orig)}”. Corrija o nome (tire palavras a mais, acerte a grafia) e confira de novo.`));
+      const f = el('form', 'login-form');
+      f.innerHTML = '<input type="text" maxlength="60" required><button class="btn primary">Conferir</button><div class="login-err"></div>';
+      const inp = $('input', f); inp.value = orig;
+      b.appendChild(f);
+      const out = el('div', 'pp-adj'); b.appendChild(out);
+      const done = async (msg) => {
+        // o nome antigo (com a palavra a mais) não volta a ser sugerido
+        const old = oldNames.filter((x) => Tags.key(x) !== Tags.key(res.name) && !res.variants.some((v) => Tags.key(v.name) === Tags.key(x)) && !pickVar.has(x));
+        if (old.length) await apiPost('people/name-ignore', null, { names: old }).catch(() => {});
+        Sheet.close(); toast(msg); if (after) whenHistoryIdle(after);
+      };
+      const show = () => {
+        out.innerHTML = '';
+        const r = res;
+        out.appendChild(el('div', 'pp-adj-h', `<b>${esc(r.name)}</b> aparece em <b>${r.files}</b> arquivo(s)`));
+        if (r.sample.length) out.appendChild(el('div', 'pp-sample', r.sample.map(esc).join(' · ')));
+        if (r.variants.length) {
+          out.appendChild(el('div', 'pp-adj-h', 'Grafias parecidas (marque as que são a mesma pessoa):'));
+          for (const v of r.variants) {
+            const row = el('label', 'pp-namerow');
+            row.innerHTML = `<input type="checkbox"><span><b>${esc(v.name)}</b> <small>${v.files} arquivo(s)</small></span><small>${esc(v.sample)}</small>`;
+            const cb = $('input', row); cb.checked = pickVar.has(v.name);
+            cb.onchange = () => { if (cb.checked) pickVar.add(v.name); else pickVar.delete(v.name); };
+            out.appendChild(row);
+          }
+        }
+        const acts = el('div', 'pp-actions');
+        const target = r.same || r.like;
+        if (r.like) out.appendChild(el('div', 'pp-var', `Parece com a pessoa “${esc(r.like)}” já cadastrada.`));
+        if (target) {
+          const add = el('button', 'btn primary', r.same ? `Usar a pessoa “${esc(r.same)}”` : `É ${esc(r.like)}: adicionar como apelido`);
+          add.onclick = async () => {
+            let t = null;
+            for (const al of [r.name, ...pickVar]) {
+              if (Tags.key(al) === Tags.key(target)) continue;
+              t = await apiPost('people/alias', null, { tag: target, alias: al, person: !!r.like });
+            }
+            if (!t) t = await apiPost('tags', { action: 'edit' }, { name: target, person: true });
+            Tags.apply(t); done(`“${r.name}” ligado a ${target}`);
+          };
+          acts.appendChild(add);
+        }
+        const lk = el('button', 'btn', `${icon('tag')}É de outra tag…`);
+        lk.onclick = () => linkToTag([r.name, ...pickVar], async () => { await done('Nome ligado à tag'); }, true);
+        if (!r.same) {
+          const mk = el('button', 'btn' + (target ? '' : ' primary'), `Criar pessoa “${esc(r.name)}”`);
+          mk.onclick = async () => {
+            const t = await apiPost('people/name', null, { faces: [], name: r.name, apply: false });
+            let tl = t;
+            if (pickVar.size) tl = await apiPost('tags', { action: 'edit' }, { name: t.tag, aliases: [...pickVar] });
+            Tags.apply(tl); done(`“${r.name}” criada como pessoa${pickVar.size ? ` (+${pickVar.size} grafia(s))` : ''}`);
+          };
+          acts.appendChild(mk);
+        }
+        acts.appendChild(lk);
+        out.appendChild(acts);
+        if (!r.files && !r.variants.length) out.appendChild(el('div', 'pp-note', 'Nenhum arquivo com esse nome. Confira a grafia.'));
+      };
+      f.onsubmit = async (ev) => {
+        ev.preventDefault();
+        $('.login-err', f).textContent = '';
+        out.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+        try { res = await apiPost('people/name-check', null, { name: inp.value }); pickVar.clear(); show(); }
+        catch (e) { out.innerHTML = ''; $('.login-err', f).textContent = e.message; }
+      };
+      if (!IS_TOUCH) setTimeout(() => { inp.focus(); inp.select(); }, 60);
+    });
+  }
+
+  // indicar que o nome encontrado é de uma tag que já existe: vira um apelido dela, e os arquivos com
+  // esse nome passam a ser sugeridos para a tag
+  function linkToTag(names, after, quiet) {
+    let q = '';
+    Sheet.open((b) => {
+      b.classList.add('move-sheet');
+      const top = el('div', 'move-top');
+      const h = el('h3'); h.textContent = `“${names[0]}” é de qual tag?`;
+      const sb = el('div', 'move-search');
+      sb.innerHTML = `${icon('search')}<input type="search" maxlength="40" placeholder="Buscar tag…" autocomplete="off">`;
+      const input = $('input', sb);
+      top.append(h, sb, el('div', 'sheet-note tag-hint', `${names.length > 1 ? `“${names.map(esc).join('”, “')}” viram` : 'O nome vira'} outro nome da tag escolhida. Os arquivos com esse nome passam a aparecer em “Encontrados” para essa tag.`));
+      const list = el('div', 'move-list');
+      const render = () => {
+        list.innerHTML = '';
+        const ql = Tags.key(q);
+        const shown = Tags.list.filter((t) => !ql || Tags.key(t.name).includes(ql) || (t.aliases || []).some((a) => Tags.key(a).includes(ql)));
+        for (const t of shown) {
+          const r = el('button', 'row');
+          r.innerHTML = `<i class="tag-dot" style="background:${t.color}"></i><span class="lbl">${esc(t.name)}</span>${t.person ? '<span class="val">pessoa</span>' : ''}<span class="val">${t.count}</span>`;
+          r.onclick = async () => {
+            try {
+              let res = null;
+              for (const n of names) if (Tags.key(n) !== Tags.key(t.name)) res = await apiPost('people/alias', null, { tag: t.name, alias: n });
+              if (res) Tags.apply(res);
+              if (!quiet) { Sheet.close(); toast(`“${names[0]}” ligado à tag ${t.name}`); }
+              if (after) whenHistoryIdle(after);
+            } catch (e) { toast(e.message); }
+          };
+          list.appendChild(r);
+        }
+        if (!shown.length) list.appendChild(el('div', 'sheet-note', 'Nenhuma tag encontrada.'));
+      };
+      input.addEventListener('input', () => { q = input.value; render(); });
+      b.append(top, list); render();
+      if (!IS_TOUCH) setTimeout(() => input.focus(), 60);
     });
   }
 

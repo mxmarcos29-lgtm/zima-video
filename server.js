@@ -1643,14 +1643,53 @@ function typoOf(a, b) {
   const max = Math.min(a.length, b.length) >= 12 ? 2 : 1;
   return editDist(a, b, max) <= max;
 }
+// conferir um nome digitado/ajustado: em quantos arquivos aparece, grafias parecidas e pessoa já cadastrada
+async function checkName(raw) {
+  const name = String(raw || '').replace(/\s+/g, ' ').trim().slice(0, 60);
+  const key = normName(name).trim();
+  if (key.length < 3) throw new HttpError(400, 'Nome muito curto');
+  const db = await loadTags();
+  const nw = key.split(' ').length;
+  const idx = await getIndex();
+  const exact = new Set(); const vars = new Map(); // grafia -> Set(arquivos)
+  for (const it of idx) {
+    if (it.d || it.t !== 'video' || nameExcluded(it.p)) continue;
+    const words = normName(path.posix.basename(it.p)).trim().split(' ');
+    const n = ` ${words.join(' ')} `;
+    if (n.includes(` ${key} `)) exact.add(it.p);
+    for (let i = 0; i + nw <= words.length; i++) {
+      const g = words.slice(i, i + nw).join(' ');
+      if (g !== key && typoOf(g, key)) { if (!vars.has(g)) vars.set(g, new Set()); vars.get(g).add(it.p); }
+    }
+  }
+  // pessoa já cadastrada com este nome (ou apelido) ou com grafia quase igual
+  let same = findTag(db, name); let like = null;
+  if (!same) {
+    for (const [t, v] of Object.entries(db.tags)) {
+      if (!v.person) continue;
+      if ([t, ...(v.aliases || [])].some((x) => typoOf(normName(x).trim(), key))) { like = t; break; }
+    }
+  }
+  // grafias que já são o nome/apelido de alguma tag não precisam ser oferecidas
+  const knownKeys = new Set(Object.entries(db.tags).flatMap(([t, v]) => [t, ...(v.aliases || [])].map((x) => normName(x).trim())));
+  const titled = (k) => k.split(' ').map((w) => w[0].toUpperCase() + w.slice(1)).join(' ');
+  return {
+    name, files: exact.size, sample: [...exact].slice(0, 4).map((p) => path.posix.basename(p)),
+    variants: [...vars.entries()].filter(([g]) => !peopleDb.nameIgnored[g] && !knownKeys.has(g)).map(([g, set]) => ({ name: titled(g), files: set.size, sample: path.posix.basename([...set][0]) })).sort((a, b) => b.files - a.files).slice(0, 20),
+    same, like,
+  };
+}
 async function nameSuggestions(scope) {
   const db = await loadTags();
-  const people = Object.entries(db.tags).filter(([, v]) => v.person)
+  // pessoas e também tags com outros nomes ligados a elas (ex.: um nome que o usuário indicou ser de uma tag)
+  const people = Object.entries(db.tags).filter(([, v]) => v.person || (v.aliases || []).length)
     .map(([tag, v]) => ({ tag, pats: [tag, ...(v.aliases || [])].map((x) => normName(x)).filter((x) => x.trim().length >= 3) }));
   const idx = await getIndex();
   let prefix = ''; if (scope) { prefix = relOf(resolveSafe(scope)); if (prefix) prefix += '/'; }
   const sugg = []; const cand = new Map(); // nome possível -> Set(arquivos)
   const known = new Set(Object.keys(db.tags).map((t) => normName(t)));
+  const personInside = people.flatMap((pp) => pp.pats).filter((x) => x.trim().includes(' '));
+  const knownSeqs = [...known].map((k) => k.trim().split(' ')).filter((ws) => ws[0] && ws.join('').length >= 3);
   for (const [, v] of Object.entries(db.tags)) for (const a of v.aliases || []) known.add(normName(a));
   let skipped = 0;
   for (const it of idx) {
@@ -1667,12 +1706,25 @@ async function nameSuggestions(scope) {
     // nomes possíveis: 2–3 palavras seguidas com inicial maiúscula (ex.: "Maria Souza"), repetidas em vários arquivos
     const words = name.replace(/\.[A-Za-z0-9]{2,4}$/, '').split(/[\s._\-[\](){},+&@#!]+/).filter(Boolean);
     const isCap = (w) => /^[A-ZÀ-Þ][a-zà-ÿ]{1,}$/.test(w) && !NAME_STOP.has(norm(w));
+    // palavras que já fazem parte do nome de uma tag/apelido neste arquivo não formam nomes novos
+    // (ex.: com "Bruno Alves" cadastrado, "Bruno Alves Show" não vira a sugestão "Alves Show")
+    const wn = words.map((w) => norm(w).replace(/[^a-z0-9]/g, ''));
+    const covered = new Set();
+    for (const ks of knownSeqs) {
+      for (let i = 0; i + ks.length <= wn.length; i++) {
+        if (ks.every((w, j) => wn[i + j] === w)) for (let j = 0; j < ks.length; j++) covered.add(i + j);
+      }
+    }
     for (let i = 0; i < words.length; i++) {
       for (const len of [2, 3]) {
         const seq = words.slice(i, i + len);
         if (seq.length < len || !seq.every(isCap)) continue;
+        if (seq.some((_, j) => covered.has(i + j))) continue;
         const k = seq.join(' ');
-        if (known.has(normName(k)) || peopleDb.nameIgnored[normName(k).trim()]) continue;
+        const nk = normName(k);
+        if (known.has(nk) || peopleDb.nameIgnored[nk.trim()]) continue;
+        // já contém o nome de uma pessoa cadastrada (ex.: "Carlos Pereira Show" quando "Carlos Pereira" existe)
+        if (personInside.some((x) => nk.includes(x))) continue;
         if (!cand.has(k)) cand.set(k, new Set());
         cand.get(k).add(it.p);
       }
@@ -2147,6 +2199,7 @@ const server = http.createServer(async (req, res) => {
       }
       // ---- pessoas (administrador)
       case '/api/people/status': await requireAdminGet(req); return sendJSON(res, await peopleStatus());
+      case '/api/people/name-check': await requireAdmin(req); return sendJSON(res, await checkName((await readBody(req)).name));
       case '/api/people/names': await requireAdmin(req); return sendJSON(res, await nameSuggestions((await readBody(req)).scope || ''));
       case '/api/people/apply': await requireAdmin(req); return sendJSON(res, await applySuggestions((await readBody(req)).pairs));
       case '/api/people/questions': {
@@ -2221,7 +2274,8 @@ const server = http.createServer(async (req, res) => {
         const db = await loadTags(); const t = cleanTagName(b.tag);
         if (!db.tags[t]) throw new HttpError(404, 'Tag não encontrada');
         const al = new Set(db.tags[t].aliases || []); al.add(String(b.alias || '').replace(/\s+/g, ' ').trim().slice(0, 60));
-        al.delete(''); db.tags[t].aliases = [...al].slice(0, 30); db.tags[t].person = true;
+        al.delete(''); db.tags[t].aliases = [...al].slice(0, 30);
+        if (b.person) db.tags[t].person = true;
         await saveTags(); return sendJSON(res, { ok: true, ...(await listTags()) });
       }
       case '/api/people/reanalyze': {

@@ -872,3 +872,8 @@ body.cf-light .thumb video.pv.on, body.cf-strong .thumb video.pv.on { opacity: .
 .pp-namerow > span, .pp-namerow > small { grid-column: 2; }
 .pp-namerow > input { grid-column: 1; grid-row: 1 / span 2; }
 .pp-namerow > .pp-no { grid-column: 3; grid-row: 1 / span 2; }
+.pp-adj { padding: 4px 20px 12px; }
+.pp-adj .pp-actions { margin-top: 14px; }
+.pp-adj-h { font-size: 13.5px; margin: 10px 0 4px; }
+.pp-adj .pp-namerow { grid-template-columns: auto 1fr; }
+.pp-cand-b .btn svg { width: 16px; height: 16px; fill: currentColor; vertical-align: -3px; margin-right: 4px; }
