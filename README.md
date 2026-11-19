@@ -165,6 +165,10 @@ Se a GPU falhar com algum arquivo, o servidor volta automaticamente para convers
 | `ADMIN_PASSWORD` | vazio | Senha do modo administrador (opcional: dá para criar a senha pelo app) |
 | `SHOW_HIDDEN` | `0` | `1` mostra arquivos ocultos (`.x`, `@eaDir`…) |
 
+## Pasta de cache dentro da biblioteca
+
+Na instalação padrão o cache fica em `/DATA/AppData/zima-video/cache`, que também está dentro de `/DATA` (a biblioteca). O app marca a própria pasta de cache (arquivo `.zima-video-cache`) e a reconhece mesmo vista pelo caminho da biblioteca: ela não aparece na lista, na busca, nas tags, nas sugestões nem na análise de rosto. Tags e análises que tenham ido parar em arquivos do cache em versões antigas são apagadas sozinhas.
+
 ## Dicas
 
 - **Adicionar à tela inicial** do celular (menu do navegador → "Adicionar à tela inicial") para abrir como app, em tela cheia.

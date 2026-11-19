@@ -62,6 +62,23 @@ const sha1 = (s) => crypto.createHash('sha1').update(s).digest('hex');
 fs.mkdirSync(path.join(CACHE, 'thumbs'), { recursive: true });
 fs.mkdirSync(path.join(CACHE, 'subs'), { recursive: true });
 fs.mkdirSync(path.join(CACHE, 'previews'), { recursive: true });
+// A pasta de cache do app pode estar DENTRO da biblioteca (ex.: /DATA/AppData/zima-video/cache, com /DATA como
+// mídia). Ela é marcada e reconhecida (pelo arquivo-marca ou por ser a mesma pasta) para nunca aparecer como
+// mídia: nem na lista, na busca, nas tags, nas sugestões ou na análise de rosto.
+const CACHE_MARK = '.zima-video-cache';
+let cacheId = null;
+try {
+  fs.writeFileSync(path.join(CACHE, CACHE_MARK), 'Cache do Zima Video (miniaturas e prévias) — não é mídia.\n');
+  const cst = fs.statSync(CACHE); cacheId = `${cst.dev}:${cst.ino}`;
+} catch { /* cache só leitura */ }
+const cacheRels = new Set(); // caminhos (relativos à mídia) onde a pasta de cache foi encontrada
+const inCacheRel = (rel) => { for (const c of cacheRels) if (rel === c || rel.startsWith(c + '/')) return true; return false; };
+async function isCacheDir(abs, st) {
+  if (!st) st = await statSafe(abs);
+  if (!st || !st.isDirectory()) return false;
+  if (cacheId && `${st.dev}:${st.ino}` === cacheId) return true;
+  return !!(await statSafe(path.join(abs, CACHE_MARK)));
+}
 fs.mkdirSync(path.join(CACHE, 'storyboards'), { recursive: true });
 fs.rmSync(path.join(CACHE, 'hls'), { recursive: true, force: true });
 fs.mkdirSync(path.join(CACHE, 'hls'), { recursive: true });
@@ -184,10 +201,17 @@ async function readEntries(abs, st) {
       const s = stats[k];
       if (!s) return;
       const dir = s.isDirectory();
-      entries.push({ name: d.name, type: dir ? 'dir' : typeOf(d.name), size: dir ? 0 : s.size, mtime: s.mtimeMs });
+      entries.push({ name: d.name, type: dir ? 'dir' : typeOf(d.name), size: dir ? 0 : s.size, mtime: s.mtimeMs, _s: s });
     });
   }
-  return entries;
+  // a pasta de cache do app não aparece
+  const out = [];
+  for (const e of entries) {
+    const s = e._s; delete e._s;
+    if (e.type === 'dir' && await isCacheDir(path.join(abs, e.name), s)) { cacheRels.add(relOf(path.join(abs, e.name))); continue; }
+    out.push(e);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------- search index
@@ -195,7 +219,7 @@ let index = null; let indexBuiltAt = 0; let indexBuilding = null;
 
 async function buildIndex() {
   const t0 = Date.now();
-  const out = [];
+  const out = []; const foundCache = new Set();
   const stack = [ROOT];
   const MAX = 1000000;
   while (stack.length && out.length < MAX) {
@@ -208,11 +232,14 @@ async function buildIndex() {
       let isDir = d.isDirectory();
       if (d.isSymbolicLink()) { const s = await statSafe(abs); if (!s) continue; isDir = s.isDirectory(); }
       const rel = relOf(abs);
+      if (isDir && await isCacheDir(abs)) { foundCache.add(rel); continue; } // cache do próprio app
       out.push({ p: rel, n: norm(d.name), d: isDir, t: isDir ? 'dir' : typeOf(d.name) });
       if (isDir) stack.push(abs);
     }
   }
   index = out; indexBuiltAt = Date.now();
+  if ([...foundCache].join('\n') !== [...cacheRels].join('\n')) { cacheRels.clear(); for (const c of foundCache) cacheRels.add(c); }
+  if (cacheRels.size) purgeCacheItems().catch((e) => console.error('cache purge', e));
   console.log(`[busca] índice com ${out.length} itens em ${Date.now() - t0}ms`);
   return out;
 }
@@ -1010,11 +1037,22 @@ async function editTag({ name, newName, color, remove, person, aliases }) {
   await saveTags();
   return listTags();
 }
+// tira tags, rostos e visualizações que tenham ido parar em arquivos do cache (versões antigas não escondiam)
+let purgedKey = '';
+async function purgeCacheItems() {
+  const key = [...cacheRels].join('\n'); if (key === purgedKey) return; purgedKey = key;
+  const db = await loadTags(); let n = 0;
+  for (const rel of Object.keys(db.items)) if (inCacheRel(rel)) { delete db.items[rel]; n++; }
+  if (n) await saveTags();
+  let f = 0;
+  for (const rel of [...faceVideos.keys()]) if (inCacheRel(rel)) { fs.rm(videoFile(rel), { force: true }, () => {}); indexFaces(rel, null); f++; }
+  if (n || f) console.log(`[cache] pasta de cache dentro da biblioteca escondida (${[...cacheRels].join(', ')}): ${n} tag(s) e ${f} análise(s) de rosto removidas`);
+}
 async function itemsWithTag(tag) {
   const db = await loadTags();
   const out = [];
   for (const [rel, list] of Object.entries(db.items)) {
-    if (!list.includes(tag)) continue;
+    if (!list.includes(tag) || inCacheRel(rel)) continue;
     const st = await statSafe(path.join(ROOT, rel));
     if (!st) continue;
     const dir = st.isDirectory();
@@ -1566,7 +1604,7 @@ function rowsOf(rel) {
 }
 function allRows() {
   const out = [];
-  for (const rel of faceVideos.keys()) if (!faceExcluded(rel)) for (const r of rowsOf(rel)) out.push(r);
+  for (const rel of faceVideos.keys()) if (!faceExcluded(rel) && !inCacheRel(rel)) for (const r of rowsOf(rel)) out.push(r);
   return out;
 }
 // protótipos de cada pessoa: até 12 rostos de referência bem diferentes entre si (cobre ângulos e idades)
