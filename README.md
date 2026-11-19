@@ -94,6 +94,7 @@ Menu ⋮ → **Pessoas** (modo administrador). Só reconhece as pessoas que **vo
 - **Juntar tags:** ⋮ da tag → “Juntar com outra tag…”, ou menu ⋮ → “Tags parecidas” (acha duplicadas por maiúsculas, acentos, pontuação, ordem das palavras, apelidos ou 1 letra diferente). O nome antigo vira apelido. Ao criar uma tag (inclusive automaticamente), uma equivalente que já existe é reaproveitada.
 - **Excluir pastas da análise de rosto:** ⋮ numa pasta → “Não analisar rostos nesta pasta”, ou Pessoas → **Pastas excluídas**. Vale para as subpastas; os rostos já encontrados nelas somem dos grupos e das sugestões (e voltam se a pasta for incluída de novo).
 - **Conferir um rosto:** a lupa (ou tocar no rosto) amplia mostrando o quadro do vídeo no momento em que o rosto foi encontrado, com setas para os outros rostos do grupo e o botão “Ver no vídeo neste momento”. O vídeo abre por cima da tela Pessoas — ao sair dele, você continua de onde estava.
+- **Menos confusão entre pessoas:** um rosto só é reconhecido como a pessoa se concordar com vários rostos de referência dela (não basta parecer com um). Rostos de referência que destoam dos outros ficam marcados como **suspeito** e deixam de ser usados (nos rostos da pessoa há “Remover suspeitos” e “Desfazer o que foi aprendido sozinho”). Cada “não é esta pessoa” (✕ numa sugestão, remover um rosto, as outras opções de uma pergunta) vira um exemplo do que ela **não** é.
 - Qualquer tag pode ser marcada como **pessoa** (⋮ ao lado da tag → “É uma pessoa”, com outras formas do nome).
 
 ### Instalar o ajudante no Windows

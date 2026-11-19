@@ -1450,13 +1450,13 @@ const PEOPLE_DIR = path.join(DATA_DIR, 'faces');
 const PEOPLE_FILE = path.join(DATA_DIR, 'people.json');
 const WORKER_FILE = path.join(DATA_DIR, 'worker.json');
 const FACE_MATCH = 0.42;   // semelhança mínima para sugerir uma pessoa (ArcFace: mesma pessoa ~0,5–0,99; outra < 0,3)
-const FACE_CLUSTER = 0.45; // semelhança mínima para juntar rostos sem nome no mesmo grupo
+const FACE_CLUSTER = 0.5;  // semelhança mínima para juntar rostos sem nome no mesmo grupo
 fs.mkdirSync(path.join(PEOPLE_DIR, 'v'), { recursive: true });
 fs.mkdirSync(path.join(PEOPLE_DIR, 'c'), { recursive: true });
 
 const faceVideos = new Map(); // path -> { key, at, frames, faces: [{ id, t, score, n, emb: Float32Array }] }
 const faceById = new Map();   // id -> { path, face }
-let peopleDb = { refs: {}, ignored: {}, excluded: [], auto: {}, answered: {}, blocked: {}, notPerson: {}, nameExcluded: [], nameIgnored: {}, nameRejected: {} };
+let peopleDb = { refs: {}, ignored: {}, excluded: [], auto: {}, neg: {}, answered: {}, blocked: {}, notPerson: {}, nameExcluded: [], nameIgnored: {}, nameRejected: {} };
 // nameExcluded: pastas fora da busca pelo nome do arquivo; nameIgnored: chave do nome -> nome ("não é nome de pessoa");
 // nameRejected: 'caminho|tag' -> 1 (o nome no arquivo não é esta pessoa)
 // auto: faceId -> tag (aprendido sozinho pelas tags); answered: 'path|tag' -> resposta do usuário;
@@ -1494,7 +1494,7 @@ function indexFaces(rel, rec) {
       }
     }
   } catch { /* sem dados */ }
-  try { const j = JSON.parse(fs.readFileSync(PEOPLE_FILE, 'utf8')); peopleDb = { refs: j.refs || {}, ignored: j.ignored || {}, excluded: j.excluded || [], auto: j.auto || {}, answered: j.answered || {}, blocked: j.blocked || {}, notPerson: j.notPerson || {}, nameExcluded: j.nameExcluded || [], nameIgnored: j.nameIgnored || {}, nameRejected: j.nameRejected || {} }; } catch { /* vazio */ }
+  try { const j = JSON.parse(fs.readFileSync(PEOPLE_FILE, 'utf8')); peopleDb = { refs: j.refs || {}, ignored: j.ignored || {}, excluded: j.excluded || [], auto: j.auto || {}, neg: j.neg || {}, answered: j.answered || {}, blocked: j.blocked || {}, notPerson: j.notPerson || {}, nameExcluded: j.nameExcluded || [], nameIgnored: j.nameIgnored || {}, nameRejected: j.nameRejected || {} }; } catch { /* vazio */ }
 })();
 async function saveFaceVideo(rel, rec) {
   const file = videoFile(rel);
@@ -1582,29 +1582,68 @@ function pickDiverse(embs, k) {
   }
   return out;
 }
-const protoCache = new Map(); // tag -> { key, pv, fv, ver, embs }
+// Cada pessoa tem: protótipos (rostos de referência bem diferentes entre si), o "centro" dela e exemplos
+// negativos (rostos que o usuário disse NÃO serem ela). Rostos de referência que destoam do resto
+// (provavelmente marcados errado, ou de baixa qualidade) ficam de fora da comparação.
+const protoCache = new Map(); // tag -> { key, pv, fv, ver, embs, center, negs, bad: Set(ids suspeitos) }
+function normalized(sum) { let n = 0; for (let i = 0; i < sum.length; i++) n += sum[i] * sum[i]; n = Math.sqrt(n) || 1; return sum.map((x) => x / n); }
 function protosOf(tag) {
   let c = protoCache.get(tag);
   if (c && c.pv === peopleVer && c.fv === faceVer) return c;
   const ids = (peopleDb.refs[tag] || []).filter((id) => faceById.has(id));
-  const key = ids.join(',');
+  const nids = (peopleDb.neg[tag] || []).filter((id) => faceById.has(id));
+  const key = ids.join(',') + '|' + nids.join(',');
   if (c && c.key === key) { c.pv = peopleVer; c.fv = faceVer; return c; }
-  c = { key, pv: peopleVer, fv: faceVer, ver: ++protoSeq, embs: pickDiverse(ids.map((id) => faceById.get(id).face.emb), 12) };
+  const faces = ids.map((id) => faceById.get(id).face);
+  const negs = pickDiverse(nids.map((id) => faceById.get(id).face.emb), 60);
+  const bad = new Set();
+  let good = faces;
+  if (faces.length >= 3) {
+    // centro robusto: média dos rostos mais "concordantes" (cada um comparado com todos os outros)
+    const agree = faces.map((f, i) => { const xs = faces.map((g, j) => (i === j ? -1 : dot(f.emb, g.emb))).sort((a, b) => b - a); const k = Math.max(1, Math.ceil((faces.length - 1) / 2)); return xs.slice(0, k).reduce((a, b) => a + b, 0) / k; });
+    const sorted = [...agree].sort((a, b) => a - b);
+    const med = sorted[Math.floor(sorted.length / 2)];
+    for (let i = 0; i < faces.length; i++) {
+      const negHit = negs.length ? refSim(faces[i].emb, negs) : -1;
+      if (agree[i] < Math.max(0.28, med - 0.18) || negHit >= 0.6) bad.add(faces[i].id);
+    }
+    if (bad.size < faces.length) good = faces.filter((f) => !bad.has(f.id)); else bad.clear();
+  }
+  const sum = new Float32Array(512); for (const f of good) for (let i = 0; i < 512; i++) sum[i] += f.emb[i];
+  c = { key, pv: peopleVer, fv: faceVer, ver: ++protoSeq, embs: pickDiverse(good.map((f) => f.emb), 12), center: good.length ? normalized(sum) : null, negs, bad };
   protoCache.set(tag, c);
   return c;
 }
 const refTags = () => Object.keys(peopleDb.refs).filter((t) => protosOf(t).embs.length);
+// Pontuação de um rosto para uma pessoa. Não basta parecer com UM rosto de referência (um único rosto
+// errado fazia muita gente diferente "virar" a pessoa): precisa concordar com o segundo mais parecido e com
+// o centro dela; e perde se for mais parecido com um exemplo negativo dela.
+function scoreFor(mean, p) {
+  if (!p.embs.length) return -1;
+  let s1 = -1; let s2 = -1;
+  for (const e of p.embs) { const x = dot(mean, e); if (x > s1) { s2 = s1; s1 = x; } else if (x > s2) s2 = x; }
+  let sc;
+  if (p.embs.length === 1) sc = s1;
+  else {
+    const c = p.center ? dot(mean, p.center) : s1;
+    sc = Math.min(s1, (s1 + Math.max(s2, -1)) / 2 + 0.06, c + 0.12);
+  }
+  if (p.negs.length && refSim(mean, p.negs) >= sc - 0.02) sc -= 0.3; // parece mais com quem NÃO é ela
+  return sc;
+}
 function simTo(row, tag) {
   const p = protosOf(tag);
   const c = row.sims.get(tag);
   if (c && c[0] === p.ver) return c[1];
-  const v = p.embs.length ? refSim(row.mean, p.embs) : -1;
+  const v = scoreFor(row.mean, p);
   row.sims.set(tag, [p.ver, v]);
   return v;
 }
+// melhor pessoa para um rosto, exigindo uma folga sobre a segunda colocada (pessoas parecidas não se confundem)
 function bestOf(row, tags) {
-  let tag = null; let sim = -1;
-  for (const t of tags) { const v = simTo(row, t); if (v > sim) { sim = v; tag = t; } }
+  let tag = null; let sim = -1; let second = -1;
+  for (const t of tags) { const v = simTo(row, t); if (v > sim) { second = sim; sim = v; tag = t; } else if (v > second) second = v; }
+  if (tag && second > 0 && sim - second < 0.05) sim = Math.min(sim, FACE_MATCH - 0.01); // empate: não decide
   return { tag, sim };
 }
 const allIgnored = (row) => row.ids.every((id) => peopleDb.ignored[id]);
@@ -1821,8 +1860,12 @@ async function ensurePersonTag(name) {
 async function nameFaces({ faces, name, apply = true }) {
   const t = await ensurePersonTag(name);
   const ids = (faces || []).filter((id) => faceById.has(id));
-  peopleDb.refs[t] = [...new Set([...(peopleDb.refs[t] || []), ...ids])];
-  for (const id of ids) delete peopleDb.ignored[id];
+  // referência: os melhores rostos do grupo, no máximo 3 por vídeo e 24 no total (a tag vai para todos os vídeos)
+  const perVid = {};
+  const refs = ids.map((id) => faceById.get(id)).sort((a, b) => b.face.score - a.face.score)
+    .filter((x) => (perVid[x.path] = (perVid[x.path] || 0) + 1) <= 3).slice(0, 24).map((x) => x.face.id);
+  peopleDb.refs[t] = [...new Set([...(peopleDb.refs[t] || []), ...refs])];
+  for (const id of ids) { delete peopleDb.ignored[id]; delete peopleDb.blocked[`${t}|${id}`]; }
   await savePeople();
   if (apply) await applySuggestions([...new Set(ids.map((id) => faceById.get(id).path))].map((p) => ({ path: p, tag: t })));
   return { ok: true, tag: t, ...(await listTags()) };
@@ -1839,7 +1882,7 @@ async function ignoreFaces({ faces }) {
 //  - tag comum (não marcada como pessoa) cujos vídeos têm sempre o mesmo rosto: pergunta se é uma pessoa.
 const LEARN_SAMPLE = 80;      // vídeos por pessoa usados para comparar
 const LEARN_MAX_REFS = 40;    // limite de rostos de referência por pessoa
-const LEARN_SURE = 0.5;       // semelhança para reforçar a referência com um vídeo novo
+const LEARN_SURE = 0.56;      // pontuação para reforçar a referência com um vídeo novo
 function videoGroups(rel) {
   const rec = faceVideos.get(rel);
   if (!rec || rec.status === 'failed' || !rec.faces.length) return null;
@@ -1942,9 +1985,11 @@ async function learnFromTags() {
         const sup = cand.map((g) => support.get(g.key) || 0);
         const order = cand.map((g, i) => i).sort((a, b) => sup[b] - sup[a] || cand[b].n - cand[a].n);
         const top = order[0]; const second = order[1];
+        // só aprende sozinho quando o mesmo rosto se repete em outros vídeos com a tag (um vídeo só não basta:
+        // o nome no arquivo pode estar errado ou a pessoa nem aparecer)
         const sure = cand.length === 1
-          ? (sup[top] >= 1 || vids.length === 1 || cand[top].n >= 3)
-          : sup[top] >= 1 && sup[top] > (second != null ? sup[second] : -1) * 2 && sup[top] >= 2;
+          ? sup[top] >= 1
+          : sup[top] >= 2 && sup[top] > (second != null ? sup[second] : -1) * 2;
         if (sure && pass === 0) {
           if (addRefs(tag, cand[top], 2)) learned.push({ tag, path: rel });
         } else if (!sure && pass === 1) {
@@ -1983,12 +2028,18 @@ async function learnFromTags() {
   return learnLast;
 }
 // resposta do usuário a uma pergunta: { tag, path, faces } = este rosto é a pessoa; { none } = não aparece; { notPerson } = a tag não é pessoa
-async function answerQuestion({ tag, path: p, faces, none, notPerson }) {
+// exemplos negativos: rostos que o usuário disse não serem a pessoa (ensina o que NÃO é ela)
+function addNeg(tag, ids) {
+  const cur = new Set(peopleDb.neg[tag] || []);
+  for (const id of ids || []) if (faceById.has(id) && !(peopleDb.refs[tag] || []).includes(id)) { cur.add(id); peopleDb.blocked[`${tag}|${id}`] = 1; }
+  peopleDb.neg[tag] = [...cur].slice(-300);
+}
+async function answerQuestion({ tag, path: p, faces, none, notPerson, others }) {
   const db = await loadTags();
   if (!db.tags[tag]) throw new HttpError(404, 'Tag não encontrada');
   const rel = p ? relOf(resolveSafe(p)) : '';
   if (notPerson) { peopleDb.notPerson[tag] = 1; await savePeople(); return { ok: true }; }
-  if (none) { peopleDb.answered[`${rel}|${tag}`] = 'none'; await savePeople(); return { ok: true }; }
+  if (none) { peopleDb.answered[`${rel}|${tag}`] = 'none'; addNeg(tag, (others || []).slice(0, 30)); await savePeople(); return { ok: true }; }
   const ids = (faces || []).filter((id) => faceById.has(id));
   if (!ids.length) throw new HttpError(400, 'Escolha um rosto');
   if (!db.tags[tag].person) { db.tags[tag].person = true; await saveTags(); }
@@ -1996,6 +2047,7 @@ async function answerQuestion({ tag, path: p, faces, none, notPerson }) {
   peopleDb.refs[tag] = [...new Set([...(peopleDb.refs[tag] || []), ...best])];
   for (const id of best) { delete peopleDb.ignored[id]; delete peopleDb.auto[id]; delete peopleDb.blocked[`${tag}|${id}`]; }
   if (rel) peopleDb.answered[`${rel}|${tag}`] = 'faces';
+  addNeg(tag, (others || []).filter((id) => !ids.includes(id)).slice(0, 30)); // as outras opções do vídeo não são ela
   await savePeople();
   return { ok: true, ...(await listTags()) };
 }
@@ -2286,13 +2338,36 @@ const server = http.createServer(async (req, res) => {
         await requireAdminGet(req);
         const t = q.get('tag') || '';
         const ids = (peopleDb.refs[t] || []).filter((id) => faceById.has(id)).slice(0, 60);
-        return sendJSON(res, { tag: t, faces: ids, auto: ids.filter((id) => peopleDb.auto[id]) });
+        const bad = protosOf(t).bad;
+        // suspeitos primeiro, para revisar
+        ids.sort((a, b) => (bad.has(b) ? 1 : 0) - (bad.has(a) ? 1 : 0));
+        return sendJSON(res, { tag: t, faces: ids, auto: ids.filter((id) => peopleDb.auto[id]), bad: ids.filter((id) => bad.has(id)), neg: (peopleDb.neg[t] || []).length });
+      }
+      case '/api/people/reject': {
+        // { tag, faces, path }: "não é esta pessoa" — vira exemplo negativo dela (não some para as outras pessoas)
+        await requireAdmin(req); const b = await readBody(req);
+        const t = cleanTagName(b.tag);
+        addNeg(t, b.faces);
+        if (b.path) peopleDb.answered[`${relOf(resolveSafe(b.path))}|${t}`] = 'none';
+        await savePeople(); return sendJSON(res, { ok: true });
+      }
+      case '/api/people/reset-auto': {
+        // { tag, only: 'bad' | 'auto' }: tira os suspeitos, ou tudo que foi aprendido sozinho (e não reaprende)
+        await requireAdmin(req); const b = await readBody(req);
+        const t = cleanTagName(b.tag);
+        const bad = protosOf(t).bad;
+        const drop = (peopleDb.refs[t] || []).filter((id) => (b.only === 'bad' ? bad.has(id) : peopleDb.auto[id]));
+        peopleDb.refs[t] = (peopleDb.refs[t] || []).filter((id) => !drop.includes(id));
+        for (const id of drop) { peopleDb.blocked[`${t}|${id}`] = 1; delete peopleDb.auto[id]; }
+        // respostas automáticas baseadas nesses rostos são refeitas
+        await savePeople(); return sendJSON(res, { ok: true, removed: drop.length });
       }
       case '/api/people/unlink': {
         await requireAdmin(req); const b = await readBody(req);
         peopleDb.refs[b.tag] = (peopleDb.refs[b.tag] || []).filter((id) => !(b.faces || []).includes(id));
         // não reaprender este rosto para esta pessoa
         for (const id of b.faces || []) { peopleDb.blocked[`${b.tag}|${id}`] = 1; delete peopleDb.auto[id]; }
+        addNeg(b.tag, b.faces); // ensina que esse rosto não é a pessoa
         await savePeople(); return sendJSON(res, { ok: true });
       }
       case '/api/people/face': {

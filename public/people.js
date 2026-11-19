@@ -110,7 +110,8 @@ const People = (() => {
         const ok = el('button', 'icon-btn pp-ok', icon('check')); ok.title = 'Confirmar';
         ok.onclick = () => { row.remove(); apiPost('people/apply', null, { pairs: [sgi] }).then((r) => Tags.apply(r), (e) => toast(e.message)); };
         const no = el('button', 'icon-btn', icon('close')); no.title = 'Não é esta pessoa';
-        no.onclick = () => { row.remove(); apiPost('people/ignore', null, { faces: [sgi.face] }).catch((e) => toast(e.message)); };
+        // "não é esta pessoa": vira exemplo negativo dela (o sistema aprende a não confundir de novo)
+        no.onclick = () => { row.remove(); apiPost('people/reject', null, { tag: sgi.tag, faces: [sgi.face], path: sgi.path }).catch((e) => toast(e.message)); };
         row.append(ok, no);
         row.querySelector('.pp-sug-n').onclick = () => playFace(sgi.face);
         row.querySelector('img').onclick = () => zoom([sgi.face], 0);
@@ -197,7 +198,8 @@ const People = (() => {
       // responde na hora: o cartão some e a tela se atualiza por trás
       const send = async (body, msg) => {
         card.classList.add('pp-gone');
-        try { const r = await apiPost('people/answer', null, { tag: q.tag, path: q.path, ...body }); if (r.tags) Tags.apply(r); if (msg) toast(msg); refresh(); }
+        const others = q.options.flatMap((o) => o.all);
+        try { const r = await apiPost('people/answer', null, { tag: q.tag, path: q.path, others, ...body }); if (r.tags) Tags.apply(r); if (msg) toast(msg); refresh(); }
         catch (e) { card.classList.remove('pp-gone'); toast(e.message); }
       };
       for (const o of q.options) {
@@ -313,7 +315,9 @@ const People = (() => {
       const faces = el('div', 'pp-sheet-faces');
       for (const id of r.faces) {
         const auto = (r.auto || []).includes(id);
-        const im = el('button', 'pp-ref' + (auto ? ' auto' : ''), `<img src="${crop(id)}" alt=""><span>${icon('close')}</span>${auto ? '<em>auto</em>' : ''}`);
+        const bad = (r.bad || []).includes(id);
+        const im = el('button', 'pp-ref' + (auto ? ' auto' : '') + (bad ? ' bad' : ''), `<img src="${crop(id)}" alt=""><span>${icon('close')}</span>${bad ? '<em class="sus">suspeito</em>' : auto ? '<em>auto</em>' : ''}`);
+        if (bad) im.title = 'Destoa dos outros rostos desta pessoa — provavelmente é outra pessoa. Já não é usado para reconhecer.';
         if (auto) im.title = 'Aprendido sozinho pelas tags dos vídeos';
         const i = r.faces.indexOf(id);
         im.onclick = (ev) => {
@@ -323,6 +327,12 @@ const People = (() => {
         faces.appendChild(im);
       }
       if (!r.faces.length) faces.appendChild(el('div', 'sheet-note', 'Nenhum rosto ainda (pessoa criada pelo nome do arquivo).'));
+      // limpeza quando a pessoa está sendo confundida com outras
+      const nb = (r.bad || []).length; const na = (r.auto || []).length;
+      const fix = async (only, msg) => { const x = await apiPost('people/reset-auto', null, { tag: t.name, only }); toast(`${x.removed} ${msg}`); Sheet.close(); refresh(); };
+      if (nb) Sheet.row(b, { ico: 'delete', label: `Remover ${nb} rosto(s) suspeito(s)`, value: 'destoam dos outros', onClick: () => fix('bad', 'rosto(s) suspeito(s) removido(s)') });
+      if (na) Sheet.row(b, { ico: 'replay', label: `Desfazer o que foi aprendido sozinho (${na})`, value: 'se está confundindo', onClick: () => fix('auto', 'rosto(s) aprendido(s) sozinho(s) removido(s)') });
+      if (r.neg) b.appendChild(el('div', 'sheet-note', `${r.neg} rosto(s) marcados como “não é ${esc(t.name)}” ajudam a não confundir.`));
       b.appendChild(faces);
       Sheet.row(b, { ico: 'edit', label: 'Apelidos / outras formas do nome…', onClick: () => aliasSheet(t) });
     });

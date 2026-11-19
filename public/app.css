@@ -937,3 +937,5 @@ body.cf-light .thumb video.pv.on, body.cf-strong .thumb video.pv.on { opacity: .
 .fz-bar .btn { display: inline-flex; align-items: center; gap: 6px; }
 .fz-bar .btn svg { width: 18px; height: 18px; fill: currentColor; }
 .people, .tagsp { padding-bottom: calc(110px + var(--safe-b)); }
+.pp-ref.bad img { outline: 2px solid #ff5c7a; outline-offset: -2px; opacity: .75; }
+.pp-ref em.sus { background: #ff5c7a; }
