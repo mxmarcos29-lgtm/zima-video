@@ -875,6 +875,7 @@ async function loadJSON(file, def) { try { return JSON.parse(await fsp.readFile(
 const TAG_FILE = path.join(DATA_DIR, 'tags.json');
 const TAG_COLORS = ['#7c5cff', '#ff5c7a', '#2bb673', '#ffb020', '#3ea6ff', '#ff7a2f', '#c05cff', '#14b8a6', '#e5484d', '#8d9eff'];
 let tagDb = null;
+let tagVer = 0; // muda a cada gravação das tags
 async function loadTags() {
   if (!tagDb) {
     tagDb = await loadJSON(TAG_FILE, null);
@@ -883,7 +884,7 @@ async function loadTags() {
   }
   return tagDb;
 }
-const saveTags = () => saveJSON(TAG_FILE, tagDb);
+const saveTags = () => { tagVer++; return saveJSON(TAG_FILE, tagDb); };
 const tagsOf = (rel) => (tagDb && tagDb.items[rel]) || undefined;
 const ptCollator = new Intl.Collator('pt-BR', { numeric: true, sensitivity: 'base' });
 const ptSort = (a, b) => ptCollator.compare(a, b);
@@ -1464,6 +1465,10 @@ let peopleDb = { refs: {}, ignored: {}, excluded: [], auto: {}, answered: {}, bl
 const faceExcluded = (rel) => peopleDb.excluded.some((x) => rel === x || rel.startsWith(x + '/'));
 const nameExcluded = (rel) => peopleDb.nameExcluded.some((x) => rel === x || rel.startsWith(x + '/'));
 let clusterCache = null;
+let faceVer = 0;               // muda quando chegam ou saem rostos
+let peopleVer = 0;             // muda a cada alteração em people.json
+let protoSeq = 0;
+const groupRows = new Map();   // rel -> [{ key, rel, ids, mean, n, sims: Map(tag -> [versão, semelhança]) }]
 const b64ToEmb = (b) => { const buf = Buffer.from(b, 'base64'); return new Float32Array(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.length)); };
 const embToB64 = (e) => Buffer.from(e.buffer, e.byteOffset, e.byteLength).toString('base64');
 const dot = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; };
@@ -1472,6 +1477,7 @@ const videoFile = (rel) => path.join(PEOPLE_DIR, 'v', sha1(rel).slice(0, 2), sha
 function indexFaces(rel, rec) {
   const old = faceVideos.get(rel);
   if (old) for (const f of old.faces) faceById.delete(f.id);
+  groupRows.delete(rel); faceVer++;
   if (!rec) { faceVideos.delete(rel); clusterCache = null; return; }
   faceVideos.set(rel, rec);
   for (const f of rec.faces) faceById.set(f.id, { path: rel, face: f });
@@ -1495,7 +1501,7 @@ async function saveFaceVideo(rel, rec) {
   await fsp.mkdir(path.dirname(file), { recursive: true });
   await saveJSON(file, { path: rel, key: rec.key, at: rec.at, frames: rec.frames, status: rec.status, faces: rec.faces.map((f) => ({ ...f, emb: embToB64(f.emb) })) });
 }
-const savePeople = () => { clusterCache = null; return saveJSON(PEOPLE_FILE, peopleDb); };
+const savePeople = () => { clusterCache = null; peopleVer++; return saveJSON(PEOPLE_FILE, peopleDb); };
 async function peopleTagRenamed(from, to) {
   // respostas ('caminho|tag') e bloqueios ('tag|rosto') acompanham a tag renomeada/juntada
   for (const k of ['answered', 'nameRejected']) {
@@ -1545,69 +1551,103 @@ async function peopleRelocate(pairs, removed = []) {
   }
 }
 
-// embeddings de referência de cada pessoa (rostos que o usuário confirmou)
-function personRefs() {
+// ===================================================================== índice de grupos
+// Cada "linha" é uma pessoa dentro de um vídeo (o ajudante já agrupa os rostos do mesmo vídeo), com a
+// semelhança dela a cada pessoa conhecida guardada em cache. Quando os rostos de referência de UMA pessoa
+// mudam, só a coluna dessa pessoa é recalculada — por isso confirmar/recusar é rápido mesmo com milhares de vídeos.
+function rowsOf(rel) {
+  let r = groupRows.get(rel);
+  if (r === undefined) {
+    const gs = videoGroups(rel);
+    r = gs ? gs.map((g, i) => ({ key: `${rel}#${i}`, rel, ids: g.ids, mean: g.mean, n: g.n, sims: new Map() })) : [];
+    groupRows.set(rel, r);
+  }
+  return r;
+}
+function allRows() {
   const out = [];
-  for (const [tag, ids] of Object.entries(peopleDb.refs)) {
-    const embs = ids.map((id) => faceById.get(id)).filter(Boolean).map((x) => x.face.emb);
-    if (embs.length) out.push({ tag, embs });
+  for (const rel of faceVideos.keys()) if (!faceExcluded(rel)) for (const r of rowsOf(rel)) out.push(r);
+  return out;
+}
+// protótipos de cada pessoa: até 12 rostos de referência bem diferentes entre si (cobre ângulos e idades)
+function pickDiverse(embs, k) {
+  if (embs.length <= k) return embs;
+  const out = [embs[0]]; const near = embs.map((e) => dot(e, embs[0]));
+  while (out.length < k) {
+    let bi = -1; let bv = 2;
+    for (let i = 0; i < embs.length; i++) if (near[i] < bv) { bv = near[i]; bi = i; }
+    if (bi < 0 || bv > 0.97) break;
+    out.push(embs[bi]);
+    for (let i = 0; i < embs.length; i++) { const x = dot(embs[i], embs[bi]); if (x > near[i]) near[i] = x; }
   }
   return out;
 }
-function bestPerson(emb, refs) {
-  let best = null; let sim = -1;
-  for (const r of refs) for (const e of r.embs) { const s = dot(emb, e); if (s > sim) { sim = s; best = r.tag; } }
-  return { tag: best, sim };
+const protoCache = new Map(); // tag -> { key, pv, fv, ver, embs }
+function protosOf(tag) {
+  let c = protoCache.get(tag);
+  if (c && c.pv === peopleVer && c.fv === faceVer) return c;
+  const ids = (peopleDb.refs[tag] || []).filter((id) => faceById.has(id));
+  const key = ids.join(',');
+  if (c && c.key === key) { c.pv = peopleVer; c.fv = faceVer; return c; }
+  c = { key, pv: peopleVer, fv: faceVer, ver: ++protoSeq, embs: pickDiverse(ids.map((id) => faceById.get(id).face.emb), 12) };
+  protoCache.set(tag, c);
+  return c;
 }
+const refTags = () => Object.keys(peopleDb.refs).filter((t) => protosOf(t).embs.length);
+function simTo(row, tag) {
+  const p = protosOf(tag);
+  const c = row.sims.get(tag);
+  if (c && c[0] === p.ver) return c[1];
+  const v = p.embs.length ? refSim(row.mean, p.embs) : -1;
+  row.sims.set(tag, [p.ver, v]);
+  return v;
+}
+function bestOf(row, tags) {
+  let tag = null; let sim = -1;
+  for (const t of tags) { const v = simTo(row, t); if (v > sim) { sim = v; tag = t; } }
+  return { tag, sim };
+}
+const allIgnored = (row) => row.ids.every((id) => peopleDb.ignored[id]);
 
 // grupos de rostos sem nome (agrupamento guloso pela média do grupo)
 function faceClusters() {
   if (clusterCache) return clusterCache;
-  const refs = personRefs();
+  const tags = refTags();
   const named = new Set(Object.values(peopleDb.refs).flat());
-  const pool = [];
-  for (const [rel, rec] of faceVideos) {
-    if (faceExcluded(rel)) continue;
-    for (const f of rec.faces) {
-      if (named.has(f.id) || peopleDb.ignored[f.id]) continue;
-      if (refs.length && bestPerson(f.emb, refs).sim >= FACE_MATCH) continue; // já reconhecido
-      pool.push({ rel, f });
-    }
-  }
-  pool.sort((a, b) => (b.f.n || 1) - (a.f.n || 1) || b.f.score - a.f.score);
+  const pool = allRows().filter((r) => !allIgnored(r) && !r.ids.some((id) => named.has(id)) && (!tags.length || bestOf(r, tags).sim < FACE_MATCH));
+  pool.sort((a, b) => b.n - a.n);
   const clusters = [];
-  for (const it of pool) {
+  for (const r of pool) {
     let best = null; let bs = FACE_CLUSTER;
-    for (const c of clusters) { const s = dot(it.f.emb, c.mean); if (s > bs) { bs = s; best = c; } }
-    if (!best) { best = { sum: new Float32Array(it.f.emb), mean: new Float32Array(it.f.emb), faces: [], videos: new Set() }; clusters.push(best); }
+    for (const c of clusters) { const x = dot(r.mean, c.mean); if (x > bs) { bs = x; best = c; } }
+    if (!best) { best = { sum: new Float32Array(r.mean), mean: new Float32Array(r.mean), rows: [], videos: new Set() }; clusters.push(best); }
     else {
-      for (let i = 0; i < best.sum.length; i++) best.sum[i] += it.f.emb[i];
-      let nrm = 0; for (let i = 0; i < best.sum.length; i++) nrm += best.sum[i] * best.sum[i];
-      nrm = Math.sqrt(nrm) || 1; for (let i = 0; i < best.sum.length; i++) best.mean[i] = best.sum[i] / nrm;
+      for (let i = 0; i < 512; i++) best.sum[i] += r.mean[i];
+      let nrm = 0; for (let i = 0; i < 512; i++) nrm += best.sum[i] * best.sum[i];
+      nrm = Math.sqrt(nrm) || 1; for (let i = 0; i < 512; i++) best.mean[i] = best.sum[i] / nrm;
     }
-    best.faces.push(it.f.id); best.videos.add(it.rel);
+    best.rows.push(r); best.videos.add(r.rel);
   }
-  clusterCache = clusters
-    .map((c) => ({ id: c.faces[0], faces: c.faces, sample: c.faces.slice(0, 8), count: c.faces.length, videos: c.videos.size }))
-    .sort((a, b) => b.videos - a.videos || b.count - a.count);
+  clusterCache = clusters.map((c) => {
+    const faces = c.rows.flatMap((r) => r.ids.filter((id) => !peopleDb.ignored[id]));
+    return { id: faces[0], faces, sample: c.rows.slice(0, 8).map((r) => r.ids[0]), count: faces.length, videos: c.videos.size };
+  }).sort((a, b) => b.videos - a.videos || b.count - a.count);
   return clusterCache;
 }
 
-// sugestões de tags: rostos parecidos com pessoas nomeadas, em vídeos que ainda não têm a tag
+// sugestões de tags: pessoas reconhecidas em vídeos que ainda não têm a tag
 async function faceSuggestions() {
-  const refs = personRefs(); if (!refs.length) return [];
+  const tags = refTags(); if (!tags.length) return [];
   const db = await loadTags();
   const best = new Map(); // `${path}|${tag}` -> sugestão com maior semelhança
-  for (const [rel, rec] of faceVideos) {
-    if (faceExcluded(rel)) continue;
-    const has = new Set(db.items[rel] || []);
-    for (const f of rec.faces) {
-      if (peopleDb.ignored[f.id]) continue;
-      const m = bestPerson(f.emb, refs);
-      if (m.sim < FACE_MATCH || has.has(m.tag)) continue;
-      const k = `${rel}|${m.tag}`;
-      if (!best.has(k) || best.get(k).sim < m.sim) best.set(k, { path: rel, name: path.posix.basename(rel), tag: m.tag, sim: +m.sim.toFixed(3), face: f.id, via: 'rosto' });
-    }
+  for (const r of allRows()) {
+    if (allIgnored(r)) continue;
+    const m = bestOf(r, tags);
+    if (m.sim < FACE_MATCH) continue;
+    const k = `${r.rel}|${m.tag}`;
+    if ((db.items[r.rel] || []).includes(m.tag) || peopleDb.answered[k] === 'none') continue;
+    if (r.ids.every((id) => peopleDb.blocked[`${m.tag}|${id}`])) continue;
+    if (!best.has(k) || best.get(k).sim < m.sim) best.set(k, { path: r.rel, name: path.posix.basename(r.rel), tag: m.tag, sim: +m.sim.toFixed(3), face: r.ids.find((id) => !peopleDb.ignored[id]) || r.ids[0], via: 'rosto' });
   }
   return [...best.values()].sort((a, b) => b.sim - a.sim).slice(0, 1000);
 }
@@ -1820,24 +1860,47 @@ function videoGroups(rel) {
 const refSim = (mean, embs) => { let m = -1; for (const e of embs) { const x = dot(mean, e); if (x > m) m = x; } return m; };
 let learnTimer = null; let learnLast = null;
 function scheduleLearn() { clearTimeout(learnTimer); learnTimer = setTimeout(() => learnFromTags().catch((e) => console.error('learn', e)), 4000); }
+// apoio de cada grupo dentro de uma tag: em quantos OUTROS vídeos com a mesma tag aparece um rosto parecido.
+// Só depende dos vídeos da tag e dos rostos (não das respostas), então fica em cache entre as confirmações.
+const supportCache = new Map(); // tag -> { key, fv, map: rowKey -> contagem }
+function supportFor(tag, vids) {
+  const key = vids.join('\n');
+  const c = supportCache.get(tag);
+  if (c && c.key === key && c.fv === faceVer) return c.map;
+  const map = new Map();
+  const rows = vids.map((v) => rowsOf(v));
+  for (let i = 0; i < vids.length; i++) {
+    for (const g of rows[i]) {
+      let n = 0;
+      for (let j = 0; j < vids.length; j++) {
+        if (j === i) continue;
+        for (const h of rows[j]) if (dot(g.mean, h.mean) >= FACE_CLUSTER) { n++; break; }
+      }
+      map.set(g.key, n);
+    }
+  }
+  supportCache.set(tag, { key, fv: faceVer, map });
+  return map;
+}
+let learnKey = '';
 async function learnFromTags() {
   const db = await loadTags();
+  const k0 = `${faceVer}|${peopleVer}|${tagVer}`;
+  if (learnLast && learnKey === k0) return { ...learnLast, learned: 0 };
   const byTag = {};
   for (const [rel, list] of Object.entries(db.items)) {
     if (faceExcluded(rel) || !faceVideos.has(rel)) continue;
     for (const t of list) if (db.tags[t]) (byTag[t] = byTag[t] || []).push(rel);
   }
-  const gcache = new Map();
-  const groupsOf = (rel) => { if (!gcache.has(rel)) gcache.set(rel, videoGroups(rel)); return gcache.get(rel); };
   const learned = []; const questions = [];
   const addRefs = (tag, g, max) => {
     const cur = new Set(peopleDb.refs[tag] || []);
     if (cur.size >= LEARN_MAX_REFS) return 0;
     let n = 0;
-    for (const f of g.faces) {
+    for (const id of g.ids) {
       if (n >= max || cur.size >= LEARN_MAX_REFS) break;
-      if (cur.has(f.id) || peopleDb.ignored[f.id] || peopleDb.blocked[`${tag}|${f.id}`]) continue;
-      cur.add(f.id); peopleDb.auto[f.id] = tag; n++;
+      if (cur.has(id) || peopleDb.ignored[id] || peopleDb.blocked[`${tag}|${id}`]) continue;
+      cur.add(id); peopleDb.auto[id] = tag; n++;
     }
     peopleDb.refs[tag] = [...cur];
     return n;
@@ -1845,26 +1908,28 @@ async function learnFromTags() {
   const persons = Object.keys(byTag).filter((t) => db.tags[t].person);
   // duas passadas: a primeira aprende o que é certo; a segunda usa o aprendido para resolver o resto
   for (let pass = 0; pass < 2; pass++) {
-    const refs = personRefs();
-    const refMap = Object.fromEntries(refs.map((r) => [r.tag, r.embs]));
+    peopleVer++; // os rostos aprendidos na passada anterior já valem como referência
+    const known = refTags();
     for (const tag of persons) {
-      const vids = byTag[tag].slice(-LEARN_SAMPLE);
-      const others = refs.filter((r) => r.tag !== tag);
+      const vids = byTag[tag].filter((r) => rowsOf(r).length).slice(-LEARN_SAMPLE);
+      if (!vids.length) continue;
+      const others = known.filter((t) => t !== tag);
+      const mineKnown = known.includes(tag);
+      let support = null;
       for (const rel of vids) {
-        const groups = groupsOf(rel); if (!groups) continue;
-        const ans = peopleDb.answered[`${rel}|${tag}`];
-        if (ans) continue; // usuário já respondeu
+        if (peopleDb.answered[`${rel}|${tag}`]) continue; // usuário já respondeu
         // tira rostos que são claramente de outra pessoa conhecida ou que o usuário disse não ser esta
-        const cand = groups.filter((g) => {
+        const cand = rowsOf(rel).filter((g) => {
           if (g.ids.every((id) => peopleDb.ignored[id] || peopleDb.blocked[`${tag}|${id}`])) return false;
-          const mine = refMap[tag] ? refSim(g.mean, refMap[tag]) : -1;
-          const o = others.length ? Math.max(...others.map((r) => refSim(g.mean, r.embs))) : -1;
+          if (!others.length) return true;
+          const mine = mineKnown ? simTo(g, tag) : -1;
+          const o = bestOf(g, others).sim;
           return !(o >= FACE_MATCH && o > mine);
         });
         if (!cand.length) continue;
         // 1) já conhece a pessoa: confere qual rosto é ela
-        if (refMap[tag]) {
-          const sims = cand.map((g) => refSim(g.mean, refMap[tag]));
+        if (mineKnown) {
+          const sims = cand.map((g) => simTo(g, tag));
           const bi = sims.indexOf(Math.max(...sims));
           if (sims[bi] >= FACE_MATCH) {
             const has = cand[bi].ids.some((id) => (peopleDb.refs[tag] || []).includes(id));
@@ -1873,45 +1938,39 @@ async function learnFromTags() {
           }
         }
         // 2) não conhece (ou não achou): o rosto que se repete nos outros vídeos com a mesma tag
-        const support = cand.map((g) => {
-          let c = 0;
-          for (const u of vids) {
-            if (u === rel) continue;
-            const gu = groupsOf(u); if (!gu) continue;
-            if (gu.some((h) => dot(g.mean, h.mean) >= FACE_CLUSTER)) c++;
-          }
-          return c;
-        });
-        const order = cand.map((g, i) => i).sort((a, b) => support[b] - support[a] || cand[b].n - cand[a].n);
+        if (!support) support = supportFor(tag, vids);
+        const sup = cand.map((g) => support.get(g.key) || 0);
+        const order = cand.map((g, i) => i).sort((a, b) => sup[b] - sup[a] || cand[b].n - cand[a].n);
         const top = order[0]; const second = order[1];
         const sure = cand.length === 1
-          ? (support[top] >= 1 || vids.length === 1 || cand[top].n >= 3)
-          : support[top] >= 1 && support[top] > (second != null ? support[second] : -1) * 2 && support[top] >= 2;
+          ? (sup[top] >= 1 || vids.length === 1 || cand[top].n >= 3)
+          : sup[top] >= 1 && sup[top] > (second != null ? sup[second] : -1) * 2 && sup[top] >= 2;
         if (sure && pass === 0) {
           if (addRefs(tag, cand[top], 2)) learned.push({ tag, path: rel });
         } else if (!sure && pass === 1) {
           questions.push({
             kind: 'who', tag, path: rel, name: path.posix.basename(rel),
             reason: cand.length > 1 ? `Há ${cand.length} pessoas neste vídeo e não sei qual é ${tag}` : `Não tenho certeza se este rosto é ${tag}`,
-            options: order.slice(0, 6).map((i) => ({ faces: cand[i].ids.slice(0, 4), all: cand[i].ids, n: cand[i].n, seen: support[i] })),
+            options: order.slice(0, 6).map((i) => ({ faces: cand[i].ids.slice(0, 4), all: cand[i].ids, n: cand[i].n, seen: sup[i] })),
           });
         }
       }
     }
   }
   // tags comuns cujos vídeos têm sempre o mesmo rosto: talvez seja uma pessoa
-  const refsNow = personRefs();
+  const known = refTags();
   for (const [tag, vids0] of Object.entries(byTag)) {
     if (db.tags[tag].person || peopleDb.notPerson[tag]) continue;
-    const vids = vids0.slice(-LEARN_SAMPLE).filter((r) => groupsOf(r));
+    const vids = vids0.filter((r) => rowsOf(r).length).slice(-LEARN_SAMPLE);
     if (vids.length < 3) continue;
+    const support = supportFor(tag, vids);
     let best = null;
     for (const rel of vids) {
-      for (const g of groupsOf(rel)) {
-        if (refsNow.length && bestPerson(g.mean, refsNow).sim >= FACE_MATCH) continue; // já é outra pessoa
-        let c = 1;
-        for (const u of vids) if (u !== rel && groupsOf(u).some((h) => dot(g.mean, h.mean) >= FACE_CLUSTER)) c++;
-        if (!best || c > best.c || (c === best.c && g.n > best.g.n)) best = { c, g, rel };
+      for (const g of rowsOf(rel)) {
+        const c = (support.get(g.key) || 0) + 1;
+        if (best && (c < best.c || (c === best.c && g.n <= best.g.n))) continue;
+        if (known.length && bestOf(g, known).sim >= FACE_MATCH) continue; // já é outra pessoa
+        best = { c, g, rel };
       }
     }
     if (best && best.c >= Math.max(3, Math.ceil(vids.length * 0.6))) {
@@ -1920,6 +1979,7 @@ async function learnFromTags() {
   }
   if (learned.length) await savePeople();
   learnLast = { at: Date.now(), learned: learned.length, questions };
+  learnKey = `${faceVer}|${peopleVer}|${tagVer}`;
   return learnLast;
 }
 // resposta do usuário a uma pergunta: { tag, path, faces } = este rosto é a pessoa; { none } = não aparece; { notPerson } = a tag não é pessoa

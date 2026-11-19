@@ -46,13 +46,22 @@ const People = (() => {
   function hide() { open = false; root.classList.add('hidden'); document.body.classList.toggle('lock', P.state === 'max' || Search.open); B.load(B.path, false); }
   function close() { if (open) closeLayer('people'); }
 
-  async function render() {
+  // soft: atualiza por trás, mantendo a tela atual (e a rolagem) até a nova versão chegar — sem "carregando"
+  let renderSeq = 0;
+  async function render(soft = false) {
+    const seq = ++renderSeq;
     root.querySelectorAll('.pp-tabs .chip').forEach((c) => c.classList.toggle('active', c.dataset.tab === tab));
     const body = $('.pp-body', root);
-    body.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
-    try { if (tab === 'faces') await renderFaces(body); else await renderNames(body); }
-    catch (e) { body.innerHTML = `<div class="empty">${icon('info')}${esc(e.message)}</div>`; }
+    soft = soft && body.children.length && !body.querySelector(':scope > .loading');
+    if (!soft) body.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+    const into = soft ? el('div') : body;
+    try {
+      if (tab === 'faces') await renderFaces(into); else await renderNames(into);
+      if (seq !== renderSeq) return; // outra atualização mais nova já está a caminho
+      if (soft) { const y = root.scrollTop; body.replaceChildren(...into.childNodes); root.scrollTop = y; }
+    } catch (e) { if (seq === renderSeq && !soft) body.innerHTML = `<div class="empty">${icon('info')}${esc(e.message)}</div>`; }
   }
+  const refresh = () => render(true);
 
   // ================================================================ por rosto
   async function renderFaces(body) {
@@ -75,7 +84,7 @@ const People = (() => {
     const btns = el('div', 'pp-actions');
     const cb = el('button', 'btn primary', `${icon('add')}${w.length ? 'Ajudante / conectar outro PC' : 'Conectar ajudante (PC)'}`); cb.onclick = connectSheet;
     btns.appendChild(cb);
-    if (st.failed) { const rb = el('button', 'btn', 'Tentar de novo os com erro'); rb.onclick = async () => { await apiPost('people/reanalyze', null, { failed: true }); toast('Os vídeos com erro voltam para a fila'); render(); }; btns.appendChild(rb); }
+    if (st.failed) { const rb = el('button', 'btn', 'Tentar de novo os com erro'); rb.onclick = async () => { await apiPost('people/reanalyze', null, { failed: true }); toast('Os vídeos com erro voltam para a fila'); refresh(); }; btns.appendChild(rb); }
     const exb = el('button', 'btn', `Pastas excluídas${st.excluded.length ? ` (${st.excluded.length})` : ''}`); exb.onclick = () => excludedSheet('faces');
     btns.appendChild(exb);
     card.appendChild(btns);
@@ -92,16 +101,16 @@ const People = (() => {
     if (!sug.length) s1.appendChild(el('div', 'pp-note', persons().length ? 'Nenhuma sugestão nova. Conforme o ajudante analisa mais vídeos, aparecem aqui os vídeos em que as pessoas que você nomeou foram reconhecidas.' : 'Dê nome a um grupo de rostos abaixo: depois disso, os vídeos em que essa pessoa aparece são sugeridos aqui.'));
     else {
       const all = el('button', 'btn primary pp-applyall', `Aplicar todas (${sug.length})`);
-      all.onclick = async () => { const r = await apiPost('people/apply', null, { pairs: sug }); Tags.apply(r); toast(`${r.applied} tag(s) aplicada(s)`); render(); };
+      all.onclick = async () => { const r = await apiPost('people/apply', null, { pairs: sug }); Tags.apply(r); toast(`${r.applied} tag(s) aplicada(s)`); refresh(); };
       s1.appendChild(all);
       const list = el('div', 'pp-sugs');
       for (const sgi of sug.slice(0, 200)) {
         const row = el('div', 'pp-sug');
         row.innerHTML = `<img src="${crop(sgi.face)}" alt="" loading="lazy"><div class="pp-sug-t"><div class="pp-sug-n">${esc(stripExt(sgi.name))}</div><div class="pp-sug-m">${Tags.chip(sgi.tag)} <span>${pct(sgi.sim)} parecido</span></div></div>`;
         const ok = el('button', 'icon-btn pp-ok', icon('check')); ok.title = 'Confirmar';
-        ok.onclick = async () => { const r = await apiPost('people/apply', null, { pairs: [sgi] }); Tags.apply(r); row.remove(); };
+        ok.onclick = () => { row.remove(); apiPost('people/apply', null, { pairs: [sgi] }).then((r) => Tags.apply(r), (e) => toast(e.message)); };
         const no = el('button', 'icon-btn', icon('close')); no.title = 'Não é esta pessoa';
-        no.onclick = async () => { await apiPost('people/ignore', null, { faces: [sgi.face] }); row.remove(); };
+        no.onclick = () => { row.remove(); apiPost('people/ignore', null, { faces: [sgi.face] }).catch((e) => toast(e.message)); };
         row.append(ok, no);
         row.querySelector('.pp-sug-n').onclick = () => { close(); whenHistoryIdle(() => P.open({ path: sgi.path, name: sgi.name, type: 'video' })); };
         list.appendChild(row);
@@ -118,7 +127,7 @@ const People = (() => {
     for (const c of cl.clusters) {
       const g = el('button', 'pp-group');
       g.innerHTML = `<div class="pp-faces">${c.sample.slice(0, 4).map((id) => `<img src="${crop(id)}" alt="" loading="lazy">`).join('')}</div><div class="pp-g-n">${c.videos} vídeo${c.videos > 1 ? 's' : ''}</div>`;
-      g.onclick = () => nameSheet(c);
+      g.onclick = () => nameSheet(c, g);
       grid.appendChild(g);
     }
     s2.appendChild(grid);
@@ -142,7 +151,8 @@ const People = (() => {
   }
 
   // dar nome a um grupo de rostos
-  function nameSheet(c) {
+  function nameSheet(c, tile) {
+    const gone = () => { if (tile) { tile.classList.add('pp-gone'); setTimeout(() => tile.remove(), 200); } };
     Sheet.open((b) => {
       Sheet.header(b, 'Quem é?');
       const faces = el('div', 'pp-sheet-faces');
@@ -154,13 +164,17 @@ const People = (() => {
       $('datalist', f).innerHTML = persons().map((t) => `<option value="${esc(t.name)}">`).join('');
       f.onsubmit = async (ev) => {
         ev.preventDefault();
+        const btn = $('button', f); btn.disabled = true;
         try {
           const r = await apiPost('people/name', null, { faces: c.faces, name: $('input', f).value, apply: true });
-          Tags.apply(r); Sheet.close(); toast(`“${r.tag}” salvo`); whenHistoryIdle(render);
-        } catch (e) { $('.login-err', f).textContent = e.message; }
+          Tags.apply(r); Sheet.close(); gone(); toast(`“${r.tag}” salvo`); refresh();
+        } catch (e) { btn.disabled = false; $('.login-err', f).textContent = e.message; }
       };
       b.appendChild(f);
-      Sheet.row(b, { ico: 'close', label: 'Ignorar este grupo (não é alguém que quero marcar)', onClick: async () => { await apiPost('people/ignore', null, { faces: c.faces }); Sheet.close(); whenHistoryIdle(render); } });
+      Sheet.row(b, { ico: 'close', label: 'Ignorar este grupo (não é alguém que quero marcar)', onClick: () => {
+        Sheet.close(); gone();
+        apiPost('people/ignore', null, { faces: c.faces }).then(refresh, (e) => { toast(e.message); refresh(); });
+      } });
       if (!IS_TOUCH) setTimeout(() => $('input', f).focus(), 60);
     });
   }
@@ -177,10 +191,11 @@ const People = (() => {
         : `Quem é ${Tags.chip(q.tag)} neste vídeo?`;
       card.innerHTML = `<div class="pp-q-h">${title}</div><div class="pp-q-v">${esc(stripExt(q.name))}</div><div class="pp-note">${esc(q.reason)}${q.more ? ` · mais ${q.more} vídeo(s) com a mesma dúvida` : ''}</div>`;
       const opts = el('div', 'pp-q-opts');
+      // responde na hora: o cartão some e a tela se atualiza por trás
       const send = async (body, msg) => {
-        card.classList.add('busy');
-        try { const r = await apiPost('people/answer', null, { tag: q.tag, path: q.path, ...body }); if (r.tags) Tags.apply(r); if (msg) toast(msg); render(); }
-        catch (e) { card.classList.remove('busy'); toast(e.message); }
+        card.classList.add('pp-gone');
+        try { const r = await apiPost('people/answer', null, { tag: q.tag, path: q.path, ...body }); if (r.tags) Tags.apply(r); if (msg) toast(msg); refresh(); }
+        catch (e) { card.classList.remove('pp-gone'); toast(e.message); }
       };
       for (const o of q.options) {
         const b = el('button', 'pp-q-opt');
@@ -215,7 +230,7 @@ const People = (() => {
         const auto = (r.auto || []).includes(id);
         const im = el('button', 'pp-ref' + (auto ? ' auto' : ''), `<img src="${crop(id)}" alt=""><span>${icon('close')}</span>${auto ? '<em>auto</em>' : ''}`);
         if (auto) im.title = 'Aprendido sozinho pelas tags dos vídeos';
-        im.onclick = async () => { await apiPost('people/unlink', null, { tag: t.name, faces: [id] }); im.remove(); };
+        im.onclick = () => { im.remove(); apiPost('people/unlink', null, { tag: t.name, faces: [id] }).catch((e) => toast(e.message)); };
         faces.appendChild(im);
       }
       if (!r.faces.length) faces.appendChild(el('div', 'sheet-note', 'Nenhum rosto ainda (pessoa criada pelo nome do arquivo).'));

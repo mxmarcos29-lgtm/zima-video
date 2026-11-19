@@ -39,6 +39,7 @@ const Tags = {
     this.colors = Object.fromEntries(this.list.map((t) => [t.name, t.color]));
     for (const f of [...this.filter]) if (!this.colors[f]) this.filter.delete(f);
     Side.render();
+    if (typeof TagIndex !== 'undefined') TagIndex.refresh();
   },
   chip(name, extra = '') { return `<span class="tag ${extra}" style="--c:${this.colors[name] || '#888'}">${esc(name)}</span>`; },
   chips(tags) { return tags && tags.length ? `<div class="item-tags">${this.sortNames(tags).map((t) => this.chip(t)).join('')}</div>` : ''; },
@@ -107,7 +108,10 @@ const Tags = {
     const used = this.list.filter((x) => x.count);
     const h = this.foldHead('tag-home-h', 'home', `Tags${this.folded.home ? ` <small>${used.length}</small>` : ''}`);
     h.onclick = () => { this.fold('home'); this.renderHome(); };
-    box.querySelector('h2, .tag-home-h').replaceWith(h);
+    const head = el('div', 'tag-home-top');
+    const all = el('button', 'tag-all-btn', `Ver todas${icon('right')}`); all.onclick = () => TagIndex.show();
+    head.append(h, all);
+    box.querySelector('h2, .tag-home-top').replaceWith(head);
     const row = $('#tag-home-list'); row.innerHTML = '';
     row.classList.toggle('hidden', !!this.folded.home);
     for (const t of this.list.filter((x) => x.count)) {
@@ -123,6 +127,9 @@ const Tags = {
     const h = this.foldHead('side-h', 'side', `Tags${this.folded.side ? ` <small>${used.length}</small>` : ''}`);
     h.onclick = () => { this.fold('side'); Side.render(); };
     box.appendChild(h);
+    const all = el('button', 'side-link side-all', `${icon('list')}<span>Todas as tags (A–Z)</span><small>${this.list.length}</small>`);
+    all.onclick = () => TagIndex.show();
+    box.appendChild(all);
     for (const t of used) {
       if (this.folded.side && B.tagView !== t.name) continue; // recolhido: mantém só a tag aberta
       const b = el('button', 'side-link' + (B.tagView === t.name ? ' active' : ''));

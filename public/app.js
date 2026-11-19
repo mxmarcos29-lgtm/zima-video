@@ -617,6 +617,7 @@ function browserMenu() {
     api('pregen').then((r) => {
       if (r.enabled && r.running && r.total) { pg.textContent = `Preparando miniaturas e prévias em segundo plano: ${r.done} de ${r.total}`; pg.classList.remove('hidden'); }
     }).catch(() => {});
+    if (Tags.list.length) Sheet.row(b, { ico: 'tag', label: 'Todas as tags (A–Z)', value: String(Tags.list.length), chevron: true, onClick: () => { Sheet.close(); whenHistoryIdle(() => TagIndex.show()); } });
     Admin.menuRows(b);
     Sheet.row(b, { ico: 'search', label: 'Reindexar pesquisa', onClick: async () => { Sheet.close(); toast('Reindexando…'); try { const r = await api('reindex'); toast(`${r.count.toLocaleString('pt-BR')} itens indexados`); } catch (e) { toast(e.message); } } });
   });
