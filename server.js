@@ -602,10 +602,10 @@ setInterval(() => {
 }, 30000).unref();
 
 // ---------------------------------------------------------------- miniaturas
-async function thumbnail(abs, t, width, { bg = false } = {}) {
+async function thumbnail(abs, t, width, { bg = false, hq = false } = {}) {
   const st = await statSafe(abs);
   if (!st || !st.isFile()) throw new HttpError(404, 'Arquivo não encontrado');
-  const key = sha1(`${abs}|${st.size}|${st.mtimeMs}|${t}|${width}`);
+  const key = sha1(`${abs}|${st.size}|${st.mtimeMs}|${t}|${width}${hq ? '|hq' : ''}`);
   const out = path.join(CACHE, 'thumbs', key.slice(0, 2), key + '.jpg');
   if (await exists(out)) return out;
   const failMark = out + '.fail';
@@ -628,7 +628,7 @@ async function thumbnail(abs, t, width, { bg = false } = {}) {
     const fast = isImg ? [] : ['-skip_frame', 'nokey', '-noaccurate_seek'];
     let useFast = true;
     const attempt = (ss) => run(FFMPEG, ['-hide_banner', '-loglevel', 'error', '-nostdin', ...(useFast ? fast : []), ...(ss > 0 ? ['-ss', ss.toFixed(2)] : []), '-i', abs,
-      '-map', '0:v:0', '-frames:v', '1', '-vf', `scale=${width}:-2:flags=bilinear`, '-q:v', t === 'auto' ? '4' : '7', '-y', tmp], { timeout: 30000, bg });
+      '-map', '0:v:0', '-frames:v', '1', '-vf', `scale=${width}:-2:flags=bilinear`, '-q:v', hq ? '3' : t === 'auto' ? '4' : '7', '-y', tmp], { timeout: 30000, bg });
     try {
       await attempt(at).catch(() => {});
       if (!(await exists(tmp))) { useFast = false; await attempt(at).catch(() => {}); } // sem quadro-chave útil: modo exato
@@ -2218,9 +2218,12 @@ const server = http.createServer(async (req, res) => {
         if (!THUMBNAILS && !q.get('t')) throw new HttpError(404, 'Miniaturas desativadas');
         const abs = resolveSafe(q.get('path'));
         const t = q.get('t');
-        const w = Math.min(640, Math.max(80, parseInt(q.get('w') || '320', 10) || 320));
+        // exact=1: quadro grande no momento pedido (ampliar um rosto encontrado pela análise)
+        const exact = !!q.get('exact') && t != null;
+        const w = Math.min(exact ? 1280 : 640, Math.max(80, parseInt(q.get('w') || '320', 10) || 320));
         lastUserActivity = Date.now();
-        const job = thumbnail(abs, t == null ? 'auto' : String(Math.round(parseFloat(t) / 5) * 5), w);
+        const tt = t == null ? 'auto' : exact ? (Math.round(parseFloat(t) * 10) / 10).toFixed(1) : String(Math.round(parseFloat(t) / 5) * 5);
+        const job = thumbnail(abs, tt, w, { hq: exact });
         // se não fica pronta logo, responde "tente de novo" em vez de segurar a conexão: o navegador só abre
         // ~6 conexões por servidor, e miniaturas esperando travavam a navegação entre pastas
         const file = await Promise.race([job, new Promise((r) => setTimeout(() => r(null), 400))]);
@@ -2291,6 +2294,13 @@ const server = http.createServer(async (req, res) => {
         // não reaprender este rosto para esta pessoa
         for (const id of b.faces || []) { peopleDb.blocked[`${b.tag}|${id}`] = 1; delete peopleDb.auto[id]; }
         await savePeople(); return sendJSON(res, { ok: true });
+      }
+      case '/api/people/face': {
+        // de onde veio um rosto: vídeo e momento (para ampliar e abrir o vídeo naquele ponto)
+        await requireAdminGet(req);
+        const f = faceById.get(q.get('id') || '');
+        if (!f) throw new HttpError(404, 'Rosto não encontrado');
+        return sendJSON(res, { id: f.face.id, path: f.path, name: path.posix.basename(f.path), t: f.face.t, score: f.face.score });
       }
       case '/api/people/crop': {
         await requireAdminGet(req);

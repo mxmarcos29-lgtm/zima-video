@@ -1172,9 +1172,11 @@ const P = {
     player.classList.remove('hidden', 'max', 'mini', 'dragging', 'leaving', 'flip');
     if (this.morphing) player.classList.add('flip');
     player.style.transform = ''; player.style.opacity = '';
-    if (s === 'hidden') { player.classList.add('hidden'); document.body.classList.remove('lock'); Preview.schedule(500); return; }
+    // páginas por cima da lista (Pessoas, Todas as tags) continuam travando a rolagem do fundo
+    const over = (typeof People !== 'undefined' && People.open) || (typeof TagIndex !== 'undefined' && TagIndex.open);
+    if (s === 'hidden') { player.classList.add('hidden'); document.body.classList.toggle('lock', !!over); Preview.schedule(500); return; }
     player.classList.add(s);
-    document.body.classList.toggle('lock', s === 'max');
+    document.body.classList.toggle('lock', s === 'max' || !!over);
     if (s === 'max') Preview.stop(); else Preview.schedule(500);
     if (s === 'max' && prev !== 'max') pushLayer('player', () => this.minimize(true));
     if (s === 'max') { player.scrollTop = 0; showControls(); }

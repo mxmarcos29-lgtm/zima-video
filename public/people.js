@@ -112,7 +112,8 @@ const People = (() => {
         const no = el('button', 'icon-btn', icon('close')); no.title = 'Não é esta pessoa';
         no.onclick = () => { row.remove(); apiPost('people/ignore', null, { faces: [sgi.face] }).catch((e) => toast(e.message)); };
         row.append(ok, no);
-        row.querySelector('.pp-sug-n').onclick = () => { close(); whenHistoryIdle(() => P.open({ path: sgi.path, name: sgi.name, type: 'video' })); };
+        row.querySelector('.pp-sug-n').onclick = () => playFace(sgi.face);
+        row.querySelector('img').onclick = () => zoom([sgi.face], 0);
         list.appendChild(row);
       }
       s1.appendChild(list);
@@ -156,7 +157,9 @@ const People = (() => {
     Sheet.open((b) => {
       Sheet.header(b, 'Quem é?');
       const faces = el('div', 'pp-sheet-faces');
-      faces.innerHTML = c.faces.slice(0, 12).map((id) => `<img src="${crop(id)}" alt="">`).join('');
+      const ids12 = c.faces.slice(0, 12);
+      faces.innerHTML = ids12.map((id, i) => `<img src="${crop(id)}" alt="" data-i="${i}" class="pp-zoomable" title="Ampliar">`).join('');
+      faces.onclick = (ev) => { const im = ev.target.closest('img'); if (im) zoom(ids12, +im.dataset.i); };
       b.appendChild(faces);
       b.appendChild(el('div', 'sheet-note', `${c.count} rosto(s) em ${c.videos} vídeo(s). Ao salvar, a tag da pessoa é aplicada nesses vídeos e os rostos viram referência para reconhecer a pessoa nos outros vídeos.`));
       const f = el('form', 'login-form');
@@ -201,6 +204,9 @@ const People = (() => {
         const b = el('button', 'pp-q-opt');
         b.innerHTML = `<div class="pp-faces">${o.faces.map((id) => `<img src="${crop(id)}" alt="" loading="lazy">`).join('')}</div><span>${q.kind === 'isperson' ? `Sim, é ${esc(q.tag)}` : 'É esta pessoa'}</span>${o.seen ? `<small>aparece em ${o.seen} outro(s) vídeo(s) com a tag</small>` : ''}`;
         b.onclick = () => send({ faces: o.all }, `Aprendido: ${q.tag}`);
+        const zb = el('span', 'pp-zoom', icon('search')); zb.title = 'Ampliar / conferir no vídeo';
+        zb.onclick = (ev) => { ev.stopPropagation(); zoom(o.all.slice(0, 20), 0, q.kind === 'isperson' ? null : { label: 'É esta pessoa', run: () => send({ faces: o.all }, `Aprendido: ${q.tag}`) }); };
+        b.appendChild(zb);
         opts.appendChild(b);
       }
       card.appendChild(opts);
@@ -210,7 +216,7 @@ const People = (() => {
         acts.appendChild(no);
       } else {
         const none = el('button', 'btn', `${esc(q.tag)} não aparece`); none.onclick = () => send({ none: true });
-        const open1 = el('button', 'btn', `${icon('play')}Ver o vídeo`); open1.onclick = () => { close(); whenHistoryIdle(() => P.open({ path: q.path, name: q.name, type: 'video' })); };
+        const open1 = el('button', 'btn', `${icon('play')}Ver o vídeo`); open1.onclick = () => playFace(q.options[0] && q.options[0].all[0], q);
         acts.append(none, open1);
       }
       card.appendChild(acts);
@@ -219,18 +225,101 @@ const People = (() => {
     return sec;
   }
 
+  // ================================================================ ampliar um rosto
+  // Mostra o quadro do vídeo no momento em que o rosto foi encontrado (grande), o recorte e um botão para
+  // abrir o vídeo naquele ponto. O vídeo abre por cima da tela Pessoas: ao fechar, volta para cá.
+  const faceInfo = new Map();
+  const infoOf = (id) => { if (!faceInfo.has(id)) faceInfo.set(id, api('people/face', { id }).catch(() => null)); return faceInfo.get(id); };
+  async function playFace(id, fallback) {
+    const f = id ? await infoOf(id) : null;
+    const it = f || fallback; if (!it) return;
+    P.open({ path: it.path, name: it.name, type: 'video' }, { from: f ? Math.max(0, f.t - 2) : null });
+  }
+  // quadro grande: o servidor pode responder "ainda gerando" (imagem 1×1); tenta de novo até ficar pronto
+  function loadFrame(img, f, token) {
+    let n = 0;
+    const url = `/api/thumb?${qs({ path: f.path, t: f.t.toFixed(1), w: 1280, exact: 1 })}`;
+    img.onload = () => {
+      if (img.dataset.token !== token) return;
+      if (img.naturalWidth <= 1) { if (++n < 40) setTimeout(() => { if (img.dataset.token === token) img.src = `${url}&r=${n}`; }, Math.min(1500, 250 * n)); return; }
+      img.classList.add('ok');
+    };
+    img.onerror = () => { if (img.dataset.token === token) img.closest('.fz').classList.add('noframe'); };
+    img.src = url;
+  }
+  let fz = null;
+  function zoom(ids, start = 0, action = null) {
+    if (!ids || !ids.length) return;
+    let i = Math.max(0, Math.min(ids.length - 1, start));
+    if (!fz) {
+      fz = el('div', 'fz hidden');
+      fz.innerHTML = `
+        <div class="fz-top"><button class="icon-btn fz-x" aria-label="Fechar">${icon('close')}</button><div class="fz-t"><div class="fz-n"></div><div class="fz-s"></div></div><span class="fz-c"></span></div>
+        <div class="fz-stage"><img class="fz-frame" alt=""><img class="fz-crop" alt=""><div class="spinner fz-spin"></div>
+          <button class="icon-btn fz-prev" aria-label="Anterior">${icon('back')}</button><button class="icon-btn fz-next" aria-label="Próximo">${icon('right')}</button></div>
+        <div class="fz-bar"></div>`;
+      document.body.appendChild(fz);
+      $('.fz-x', fz).onclick = () => closeLayer('facezoom');
+      fz.addEventListener('click', (ev) => { if (ev.target === fz || ev.target.classList.contains('fz-stage')) closeLayer('facezoom'); });
+      // deslizar para os lados troca de rosto
+      let sx = null;
+      fz.addEventListener('pointerdown', (ev) => { sx = ev.clientX; });
+      fz.addEventListener('pointerup', (ev) => { if (sx == null) return; const d = ev.clientX - sx; sx = null; if (Math.abs(d) > 60) fz._go(d < 0 ? 1 : -1); });
+      document.addEventListener('keydown', (ev) => {
+        if (!fz || fz.classList.contains('hidden')) return;
+        if (ev.key === 'ArrowRight') fz._go(1); else if (ev.key === 'ArrowLeft') fz._go(-1);
+      });
+    }
+    const show = async () => {
+      const id = ids[i]; const token = `${id}:${Date.now()}`;
+      fz.classList.remove('noframe');
+      const frame = $('.fz-frame', fz); const cropImg = $('.fz-crop', fz);
+      frame.classList.remove('ok'); frame.removeAttribute('src'); frame.dataset.token = token;
+      cropImg.src = crop(id);
+      $('.fz-c', fz).textContent = ids.length > 1 ? `${i + 1} / ${ids.length}` : '';
+      $('.fz-prev', fz).classList.toggle('hidden', i === 0);
+      $('.fz-next', fz).classList.toggle('hidden', i >= ids.length - 1);
+      $('.fz-n', fz).textContent = ''; $('.fz-s', fz).textContent = '';
+      const bar = $('.fz-bar', fz); bar.innerHTML = '';
+      const f = await infoOf(id);
+      if (frame.dataset.token !== token) return;
+      if (!f) { fz.classList.add('noframe'); return; }
+      $('.fz-n', fz).textContent = stripExt(f.name);
+      $('.fz-s', fz).textContent = `rosto encontrado em ${fmtTime(f.t)}`;
+      loadFrame(frame, f, token);
+      const pl = el('button', 'btn primary', `${icon('play')}Ver no vídeo neste momento`);
+      // fecha a ampliação (e a janela de baixo, se houver) e abre o vídeo; ao sair do vídeo, a tela Pessoas continua aqui
+      pl.onclick = () => { closeLayer('facezoom'); whenHistoryIdle(() => { Sheet.close(); whenHistoryIdle(() => playFace(id)); }); };
+      bar.appendChild(pl);
+      if (action) {
+        const ab = el('button', 'btn', `${icon('check')}${esc(action.label)}`);
+        ab.onclick = () => { closeLayer('facezoom'); action.run(); };
+        bar.appendChild(ab);
+      }
+    };
+    fz._go = (d) => { const j = i + d; if (j < 0 || j >= ids.length) return; i = j; show(); };
+    $('.fz-prev', fz).onclick = (ev) => { ev.stopPropagation(); fz._go(-1); };
+    $('.fz-next', fz).onclick = (ev) => { ev.stopPropagation(); fz._go(1); };
+    if (fz.classList.contains('hidden')) { fz.classList.remove('hidden'); pushLayer('facezoom', () => fz.classList.add('hidden')); }
+    show();
+  }
+
   async function personSheet(t) {
     const r = await api('people/person', { tag: t.name });
     Sheet.open((b) => {
       Sheet.header(b, t.name);
       Sheet.row(b, { ico: 'tag', label: 'Ver vídeos desta pessoa', onClick: () => { Sheet.close(); close(); whenHistoryIdle(() => Tags.openView(t.name)); } });
-      b.appendChild(el('div', 'sheet-note', 'Rostos usados para reconhecer esta pessoa (“auto” = aprendido pelas tags dos vídeos). Toque num rosto para removê-lo se estiver errado — ele não será aprendido de novo.'));
+      b.appendChild(el('div', 'sheet-note', 'Rostos usados para reconhecer esta pessoa (“auto” = aprendido pelas tags dos vídeos). Toque num rosto para ampliar; no ✕ para removê-lo se estiver errado — ele não será aprendido de novo.'));
       const faces = el('div', 'pp-sheet-faces');
       for (const id of r.faces) {
         const auto = (r.auto || []).includes(id);
         const im = el('button', 'pp-ref' + (auto ? ' auto' : ''), `<img src="${crop(id)}" alt=""><span>${icon('close')}</span>${auto ? '<em>auto</em>' : ''}`);
         if (auto) im.title = 'Aprendido sozinho pelas tags dos vídeos';
-        im.onclick = () => { im.remove(); apiPost('people/unlink', null, { tag: t.name, faces: [id] }).catch((e) => toast(e.message)); };
+        const i = r.faces.indexOf(id);
+        im.onclick = (ev) => {
+          if (!ev.target.closest('span')) { zoom(r.faces, i); return; } // tocar no rosto amplia; no ✕ remove
+          im.remove(); apiPost('people/unlink', null, { tag: t.name, faces: [id] }).catch((e) => toast(e.message));
+        };
         faces.appendChild(im);
       }
       if (!r.faces.length) faces.appendChild(el('div', 'sheet-note', 'Nenhum rosto ainda (pessoa criada pelo nome do arquivo).'));
