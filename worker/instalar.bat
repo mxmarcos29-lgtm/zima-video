@@ -10,7 +10,7 @@ rem --- procura um Python 3.10 a 3.13 (instala o 3.12 pelo winget se nao tiver)
 set PY=
 for %%V in (3.12 3.11 3.13 3.10) do (
   if not defined PY (
-    py -%%V -c "import sys" >nul 2>nul && set PY=py -%%V
+    py -%%V -c "import tkinter" >nul 2>nul && set PY=py -%%V
   )
 )
 if not defined PY if exist "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" set PY="%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
@@ -28,12 +28,17 @@ if not exist ".venv\Scripts\python.exe" (
 ".venv\Scripts\python.exe" -m pip install --upgrade pip
 ".venv\Scripts\python.exe" -m pip install -r requirements.txt || goto :erro
 
-rem --- configura endereco e codigo e baixa os modelos
-".venv\Scripts\python.exe" zima_worker.py --setup || goto :erro
+rem --- atalhos na area de trabalho e no menu Iniciar
+set "ALVO=%~dp0.venv\Scripts\pythonw.exe"
+set "APPF=%~dp0ajudante.pyw"
+set "DIRF=%~dp0"
+powershell -NoProfile -Command "foreach($p in @([Environment]::GetFolderPath('Desktop'), (Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'))){ $s=(New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $p 'Zima Video Ajudante.lnk')); $s.TargetPath=$env:ALVO; $s.Arguments='\"' + $env:APPF + '\"'; $s.WorkingDirectory=$env:DIRF; $s.Description='Zima Video Ajudante'; $s.Save() }"
 
 echo.
-echo Instalacao concluida! Para comecar, abra "iniciar.bat".
-pause
+echo Instalacao concluida! Abrindo o ajudante...
+echo (Depois, use o atalho "Zima Video Ajudante" na area de trabalho ou no menu Iniciar.)
+start "" "%ALVO%" "%APPF%"
+timeout /t 5 >nul
 exit /b 0
 
 :erro

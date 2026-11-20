@@ -7,23 +7,44 @@ compara - o trabalho pesado fica no PC.
 
 INSTALAR (uma vez)
  1. Extraia esta pasta em um lugar fixo (ex.: Documentos\ZimaVideo-Ajudante).
- 2. Abra "instalar.bat". Ele instala o Python (se precisar), as bibliotecas e baixa os modelos (~290 MB).
- 3. Quando pedir, cole o ENDERECO e o CODIGO que aparecem no app:
+ 2. Abra "instalar.bat". Ele instala o Python (se precisar) e as bibliotecas, cria o atalho
+    "Zima Video Ajudante" na area de trabalho e no menu Iniciar, e abre o ajudante.
+ 3. Na primeira vez, informe o ENDERECO e o CODIGO que aparecem no app:
     menu (tres pontos) -> Pessoas -> Conectar ajudante.
+    (Os modelos de reconhecimento, ~290 MB, sao baixados sozinhos na primeira vez.)
 
-USAR
- - Abra "iniciar.bat" e deixe a janela aberta (pode minimizar). Ele analisa os videos pendentes e,
-   quando termina, fica esperando videos novos.
- - Para abrir sozinho junto com o Windows: "iniciar_com_o_windows.bat".
- - Pode fechar a qualquer momento: os videos que faltam ficam esperando a proxima vez.
+ATUALIZAR (ja tinha uma versao anterior)
+ - Extraia o .zip novo POR CIMA da pasta antiga e rode "instalar.bat" de novo.
+   A configuracao (endereco e codigo) e os modelos ja baixados continuam.
+
+USAR - A JANELA DO AJUDANTE
+ Abra pelo atalho "Zima Video Ajudante" (ou "abrir_ajudante.bat").
+
+ Quanto do PC o ajudante pode usar:
+  - Automatico (recomendado):
+      * Enquanto voce usa o PC: Leve (padrao), Medio ou Pausado.
+      * Quando o PC fica parado por X minutos (padrao 5): Maximo (padrao) ou Medio.
+      * Pausa sozinho durante jogos, filmes e apresentacoes em tela cheia.
+      * Pausa sozinho com o notebook na bateria.
+  - Fixo: escolha Pausado, Leve, Medio ou Maximo.
+
+ Niveis:
+  - Leve:   um quadro por vez, trabalha ~25% do tempo, prioridade minima no Windows.
+  - Medio:  trabalha ~60% do tempo, prioridade baixa.
+  - Maximo: o mais rapido possivel (ainda com prioridade abaixo dos seus programas).
+
+ Bandeja: ao fechar a janela, o ajudante continua trabalhando no icone perto do relogio.
+ Clique no icone para abrir; com o botao direito: Pausar/Continuar, mudar o nivel ou Sair.
+ Marque "Abrir junto com o Windows" para ele iniciar sozinho, escondido na bandeja.
 
 DICAS
  - Rede: o ajudante le so alguns trechos de cada video (nao baixa o arquivo inteiro).
- - Sem placa de video compativel ele usa o processador (mais lento): iniciar.bat --cpu
- - Reconfigurar endereco/codigo: iniciar.bat --setup
+ - Sem placa de video compativel ele usa o processador (mais lento).
+ - Modo console (sem janela), para testes: iniciar.bat   (opcoes: --nivel leve|medio|maximo, --cpu, --setup)
+ - Problemas ao abrir a janela: veja o arquivo "ajudante.log" nesta pasta.
 
 PRIVACIDADE
  - Tudo fica na sua rede: os rostos sao analisados no seu PC e guardados no seu NAS.
  - O ajudante so reconhece pessoas que VOCE nomear no app; ele nao consulta nada na internet
-   (a internet so e usada para baixar os modelos na instalacao).
+   (a internet so e usada para baixar os modelos na primeira vez).
  - Modelos: InsightFace "buffalo_l" (SCRFD + ArcFace), licenca de uso nao comercial.

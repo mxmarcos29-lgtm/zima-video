@@ -99,9 +99,13 @@ Menu ⋮ → **Pessoas** (modo administrador). Só reconhece as pessoas que **vo
 
 ### Instalar o ajudante no Windows
 1. No app: Pessoas → **Conectar ajudante** → *Baixar o ajudante (.zip)*.
-2. Extraia num lugar fixo e abra `instalar.bat` (instala o Python 3.12 e os componentes, e baixa os modelos ~290 MB na primeira vez).
-3. Informe o endereço e o código gerado no app.
-4. Use `iniciar.bat` (ou `iniciar_com_o_windows.bat` para abrir junto com o Windows).
+2. Extraia num lugar fixo e abra `instalar.bat` (instala o Python 3.12 e os componentes, cria o atalho **Zima Video Ajudante** e abre o programa; os modelos ~290 MB são baixados na primeira vez). Para atualizar, extraia o .zip novo por cima e rode o `instalar.bat` de novo.
+3. Na janela do ajudante, informe o endereço e o código gerado no app.
+
+**Quanto do PC ele usa** (na janela do ajudante):
+- **Automático:** um nível enquanto você usa o PC (padrão *Leve*) e outro quando o PC fica parado por X minutos (padrão *Máximo* após 5 min); pausa sozinho em jogos/filmes/apresentações em tela cheia e com o notebook na bateria.
+- **Fixo:** Pausado, Leve (~25% do tempo, prioridade mínima), Médio (~60%) ou Máximo.
+- Fechando a janela ele continua na **bandeja** (perto do relógio), com menu para pausar e trocar o nível; “Abrir junto com o Windows” inicia escondido na bandeja.
 
 Os modelos de rosto (InsightFace buffalo_l) são de uso **não comercial**.
 

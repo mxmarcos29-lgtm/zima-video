@@ -2106,7 +2106,7 @@ async function peopleStatus() {
 // ---- download do ajudante: a pasta worker/ compactada num .zip (sem dependências)
 async function sendWorkerZip(res) {
   const dir = path.join(__dirname, 'worker');
-  const names = (await fsp.readdir(dir)).filter((n) => !n.startsWith('.') && !n.startsWith('__') && /\.(py|txt|bat|md|json)$/.test(n));
+  const names = (await fsp.readdir(dir)).filter((n) => !n.startsWith('.') && !n.startsWith('__') && /\.(py|pyw|txt|bat|md|json)$/.test(n));
   const parts = []; const central = []; let offset = 0;
   const dosTime = (() => { const d = new Date(); return { t: (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1), d: ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate() }; })();
   for (const n of names) {
@@ -2469,7 +2469,12 @@ const server = http.createServer(async (req, res) => {
       }
       // ---- ajudante (PC)
       case '/api/worker/hello': { const t = await requireWorker(req); return sendJSON(res, { ok: true, name: t.name }); }
-      case '/api/worker/job': await requireWorker(req); return sendJSON(res, await nextWorkerJob());
+      case '/api/worker/job': {
+        await requireWorker(req);
+        const job = await nextWorkerJob();
+        const st = await peopleStatus(); // para a janela do ajudante mostrar "X de Y vídeos analisados"
+        return sendJSON(res, { ...job, progress: { done: st.analyzed, total: st.videos, failed: st.failed } });
+      }
       case '/api/worker/result': await requireWorker(req); return sendJSON(res, await workerResult(await readBody(req, 64 * 1024 * 1024)));
       case '/api/worker/file': await requireWorker(req); return await serveFile(req, res, resolveSafe(q.get('path')));
       case '/api/favorites': {

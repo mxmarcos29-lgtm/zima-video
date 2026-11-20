@@ -353,9 +353,9 @@ const People = (() => {
       const steps = el('ol', 'pp-steps');
       steps.innerHTML = `
         <li><a class="btn" href="/api/people/worker.zip" download>${icon('download')}Baixar o ajudante (.zip)</a></li>
-        <li>Extraia a pasta num lugar fixo e abra <b>instalar.bat</b> (instala o Python e os componentes automaticamente).</li>
-        <li>Quando pedir, informe o endereço e o código abaixo.</li>
-        <li>Depois é só abrir <b>iniciar.bat</b> (ou <b>iniciar_com_o_windows.bat</b> para abrir sozinho).</li>`;
+        <li>Extraia a pasta num lugar fixo e abra <b>instalar.bat</b> (instala o Python e os componentes, cria o atalho <b>Zima Video Ajudante</b> e abre o programa). Já tinha uma versão? Extraia por cima e rode o instalar.bat de novo.</li>
+        <li>Na janela do ajudante, informe o endereço e o código abaixo.</li>
+        <li>Na janela você escolhe quanto do PC ele pode usar — no modo <b>Automático</b> ele usa pouco enquanto você está no PC e o máximo quando o PC fica parado. Fechando a janela, ele continua na bandeja (perto do relógio).</li>`;
       b.appendChild(steps);
       const addr = el('div', 'pp-copy', `<span>Endereço</span><code>${esc(location.origin)}</code>`);
       const ca = el('button', 'btn', 'Copiar'); ca.onclick = () => copyText(location.origin); addr.appendChild(ca);
