@@ -39,8 +39,8 @@ CONFIG = os.path.join(HERE, 'config.json')
 MODELS = os.path.join(HERE, 'models')
 MODEL_URL = 'https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_l.zip'
 MODEL_FILES = ('det_10g.onnx', 'w600k_r50.onnx')
-GROUP_SIM = 0.45      # rostos de um mesmo vídeo com semelhança acima disso = mesma pessoa
-REPS_PER_PERSON = 3   # quantos rostos de cada pessoa por vídeo são enviados (os melhores)
+GROUP_SIM = 0.40      # trilhas de um mesmo vídeo com semelhança média acima disso = mesma pessoa
+REPS_PER_PERSON = 5   # quantos rostos de cada pessoa por vídeo são enviados (os melhores, de momentos diferentes)
 
 # ---------------------------------------------------------------- níveis de uso do PC
 # duty: fração do tempo trabalhando (o resto ele descansa); parallel: quadros lidos ao mesmo tempo;
@@ -127,6 +127,7 @@ def api(cfg, method, path, **kw):
     headers = kw.pop('headers', {})
     headers['Authorization'] = 'Bearer ' + cfg['token']
     headers['X-Worker-Info'] = cfg.get('_info', '')
+    headers['X-Worker-V'] = str(ANALYSIS_VERSION)
     r = SESSION.request(method, cfg['server'] + path, headers=headers, timeout=kw.pop('timeout', 60), **kw)
     if r.status_code >= 400:
         try:
@@ -176,6 +177,87 @@ def sample_times(duration, n):
     n = int(max(6, min(n, duration / 8)))
     a, b = duration * 0.03, duration * 0.97
     return [a + (b - a) * i / max(1, n - 1) for i in range(n)]
+
+
+ANALYSIS_VERSION = 2   # 2: rajadas/trilhas, espelho, qualidade e agrupamento com restrições
+BURST = 3              # quadros seguidos lidos em cada ponto do vídeo
+BURST_GAP = 0.4        # segundos entre eles
+
+
+def split_bmps(data):
+    """Separa vários BMPs colados (saída do ffmpeg em image2pipe)."""
+    out = []; i = 0
+    while i + 6 <= len(data) and data[i:i + 2] == b'BM':
+        size = int.from_bytes(data[i + 2:i + 6], 'little')
+        if size <= 0 or i + size > len(data):
+            break
+        out.append(data[i:i + size]); i += size
+    return out
+
+
+def iou(a, b):
+    x1, y1 = max(a[0], b[0]), max(a[1], b[1]); x2, y2 = min(a[2], b[2]), min(a[3], b[3])
+    inter = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+    ua = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return float(inter / ua) if ua > 0 else 0.0
+
+
+def weighted_template(embs, qs):
+    """Assinatura de um conjunto de rostos: média ponderada pela qualidade (rostos ruins quase não contam)."""
+    w = np.maximum(np.asarray(qs, dtype=np.float32), 0.05) ** 2
+    t = (np.asarray(embs, dtype=np.float32) * w[:, None]).sum(0)
+    return t / max(float(np.linalg.norm(t)), 1e-9)
+
+
+def cluster_tracks(faces, tracks, thr=GROUP_SIM):
+    """Agrupa as trilhas do vídeo por pessoa (agrupamento hierárquico por ligação média), respeitando:
+    - mesma trilha  → mesma pessoa (já vem junta);
+    - rostos no MESMO quadro → pessoas diferentes (nunca são juntados)."""
+    n = len(tracks)
+    if not n:
+        return []
+    tpl = np.stack([weighted_template([faces[k]['emb'] for k in tr], [faces[k]['q'] for k in tr]) for tr in tracks])
+    tq = np.array([max(faces[k]['q'] for k in tr) for tr in tracks], dtype=np.float32)
+    frames = [set(faces[k]['frame'] for k in tr) for tr in tracks]
+    S = tpl @ tpl.T
+    # rostos muito ruins (borrados/de perfil) ficam com a semelhança "puxada" para baixo: entram só se forem bem parecidos
+    S = S - 0.08 * ((tq[:, None] < 0.35) | (tq[None, :] < 0.35))
+    cannot = np.zeros((n, n), dtype=bool)
+    for a in range(n):
+        for b in range(a + 1, n):
+            if frames[a] & frames[b]:
+                cannot[a, b] = cannot[b, a] = True
+    # ligação média vetorizada: sums[a, b] = soma das semelhanças entre os grupos a e b
+    NEG = -1e9
+    sums = S.astype(np.float64)
+    sums[cannot] = NEG
+    np.fill_diagonal(sums, NEG)
+    size = np.ones(n)
+    alive = np.ones(n, dtype=bool)
+    members_of = {a: [a] for a in range(n)}
+    while alive.sum() > 1:
+        avg = np.where(sums > NEG / 2, sums / np.outer(size, size), NEG)
+        avg[~alive, :] = NEG; avg[:, ~alive] = NEG
+        k = int(np.argmax(avg)); a, b = divmod(k, n)
+        if avg[a, b] <= thr:
+            break
+        # junta b em a
+        blocked = (sums[a] < NEG / 2) | (sums[b] < NEG / 2)  # alguém de a ou b aparece junto com alguém do outro grupo
+        sums[a] = np.where(blocked, NEG, sums[a] + sums[b]); sums[:, a] = sums[a]
+        sums[a, a] = NEG
+        size[a] += size[b]; alive[b] = False
+        sums[b, :] = NEG; sums[:, b] = NEG
+        members_of[a] += members_of.pop(b)
+    clusters = members_of
+    groups = []
+    for members in clusters.values():
+        idx = [k for tr in members for k in tracks[tr]]
+        groups.append({'faces': idx, 'tpl': weighted_template([faces[k]['emb'] for k in idx], [faces[k]['q'] for k in idx]),
+                       'q': max(faces[k]['q'] for k in idx), 'ntracks': len(members), 'frames': set(faces[k]['frame'] for k in idx)})
+    groups.sort(key=lambda g: -len(g['faces']))
+    for g in groups:
+        g['co'] = [j for j, h in enumerate(groups) if h is not g and g['frames'] & h['frames']]
+    return groups
 
 
 # ---------------------------------------------------------------- o ajudante (controlável)
@@ -262,22 +344,16 @@ class Helper:
         self._wait_if_paused()
 
     # --- trabalho
-    def _grab(self, url, t, fast=True):
-        cmd = [self.ffmpeg, '-nostdin', '-hide_banner', '-loglevel', 'error',
-               '-headers', f'Authorization: Bearer {self.cfg["token"]}\r\n']
-        if fast:
-            cmd += ['-skip_frame', 'nokey', '-noaccurate_seek']
-        cmd += ['-ss', f'{t:.2f}', '-i', url, '-frames:v', '1', '-vf', "scale='min(1600,iw)':-2",
-                '-f', 'image2pipe', '-vcodec', 'bmp', '-']
+    def _ffmpeg(self, cmd):
         flags = NOWINDOW | (PRIO_FLAGS[LEVELS[self.level]['prio']] if IS_WIN else 0)
         try:
             p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, creationflags=flags)
         except Exception:
-            return None
+            return b''
         with self._lock:
             self._procs.add(p)
         try:
-            out, _ = p.communicate(timeout=60)
+            out, _ = p.communicate(timeout=90)
         except subprocess.TimeoutExpired:
             p.kill(); out = b''
         finally:
@@ -285,59 +361,96 @@ class Helper:
                 self._procs.discard(p)
         if self._stop.is_set():
             raise Stopped()
-        if not out:
-            return self._grab(url, t, fast=False) if fast else None
-        return cv2.imdecode(np.frombuffer(out, np.uint8), cv2.IMREAD_COLOR)
+        return out or b''
+
+    def _grab_burst(self, url, t, n=BURST):
+        """Alguns quadros seguidos (a cada ~0,4 s) a partir do tempo t: dá para acompanhar o mesmo rosto
+        entre os quadros (uma "trilha"). O ffmpeg lê pela rede só o trecho necessário."""
+        base = [self.ffmpeg, '-nostdin', '-hide_banner', '-loglevel', 'error',
+                '-headers', f'Authorization: Bearer {self.cfg["token"]}\r\n']
+        cmd = base + ['-ss', f'{t:.2f}', '-i', url, '-frames:v', str(n),
+                      '-vf', f"fps={1 / BURST_GAP:.3f},scale='min(1600,iw)':-2", '-f', 'image2pipe', '-vcodec', 'bmp', '-']
+        frames = split_bmps(self._ffmpeg(cmd))
+        if not frames:  # vídeo difícil de buscar: só o quadro-chave mais próximo
+            cmd = base + ['-skip_frame', 'nokey', '-noaccurate_seek', '-ss', f'{t:.2f}', '-i', url, '-frames:v', '1',
+                          '-vf', "scale='min(1600,iw)':-2", '-f', 'image2pipe', '-vcodec', 'bmp', '-']
+            frames = split_bmps(self._ffmpeg(cmd))
+        out = []
+        for i, b in enumerate(frames):
+            img = cv2.imdecode(np.frombuffer(b, np.uint8), cv2.IMREAD_COLOR)
+            if img is not None:
+                out.append((round(t + i * BURST_GAP, 2), img))
+        return out
 
     def analyze(self, job):
         url = urljoin(self.cfg['server'] + '/', job['url'].lstrip('/'))
-        times = sample_times(job.get('duration') or 0, self.cfg.get('frames', 36))
+        times = sample_times(job.get('duration') or 0, self.cfg.get('frames', 30))
         t0 = time.time()
-        groups = []  # rostos da mesma pessoa dentro do vídeo
-        nframes = 0
+        faces = []    # todas as detecções: {t, frame, box, emb, q, score, crop}
+        nframes = 0; fid = 0
+        tracks = []   # listas de índices em faces (o mesmo rosto em quadros seguidos)
         i = 0
-        # lê os quadros em pequenos lotes (o tamanho do lote acompanha o nível) e analisa cada lote
         while i < len(times):
             self._wait_if_paused()
             par = max(1, min(int(self.cfg.get('parallel', 4)), LEVELS[self.level]['parallel']))
             batch = times[i:i + par]
             tb = time.time()
             with ThreadPoolExecutor(max_workers=par) as ex:
-                frames = list(ex.map(lambda t: (t, self._grab(url, t)), batch))
-            for t, img in frames:
-                if img is None:
-                    continue
-                nframes += 1
-                for f in self.eng.analyze(img):
-                    size = float(min(f['box'][2] - f['box'][0], f['box'][3] - f['box'][1]))
-                    crop = face_crop(img, f['box'])
-                    item = {'t': t, 'score': f['score'], 'size': size, 'emb': f['emb'], 'box': f['box'], 'crop': crop}
-                    best, bs = None, GROUP_SIM
-                    for g in groups:
-                        s = float(np.dot(g['mean'], f['emb']))
-                        if s > bs:
-                            best, bs = g, s
-                    if best is None:
-                        groups.append({'sum': f['emb'].copy(), 'mean': f['emb'].copy(), 'items': [item]})
-                    else:
-                        best['items'].append(item)
-                        best['sum'] += f['emb']
-                        best['mean'] = best['sum'] / max(np.linalg.norm(best['sum']), 1e-9)
+                bursts = list(ex.map(lambda t: self._grab_burst(url, t), batch))
+            for burst in bursts:
+                prev = []  # (índice da trilha, índice do rosto) no quadro anterior da rajada
+                for t, img in burst:
+                    nframes += 1; fid += 1
+                    cur = []
+                    dets = self.eng.analyze(img)
+                    for f in dets:
+                        k = len(faces)
+                        faces.append({'t': t, 'frame': fid, 'box': f['box'], 'emb': f['emb'], 'q': f['q'], 'score': f['score'],
+                                      'crop': face_crop(img, f['box'])})
+                        cur.append(k)
+                    # liga cada rosto ao do quadro anterior que está no mesmo lugar e parece com ele
+                    used = set(); now = []
+                    for k in sorted(cur, key=lambda k: -faces[k]['q']):
+                        best, bv = None, 0.0
+                        for ti, pk in prev:
+                            if ti in used:
+                                continue
+                            ov = iou(faces[k]['box'], faces[pk]['box'])
+                            if ov >= 0.25 and float(np.dot(faces[k]['emb'], faces[pk]['emb'])) >= 0.3 and ov > bv:
+                                best, bv = ti, ov
+                        if best is None:
+                            tracks.append([k]); best = len(tracks) - 1
+                        else:
+                            tracks[best].append(k)
+                        used.add(best); now.append((best, k))
+                    prev = now
             i += len(batch)
             self.emit('progress', {'frames': i, 'total': len(times)})
             self._breathe(time.time() - tb)
-        out = []
+        groups = cluster_tracks(faces, tracks)
+        out = []; meta = []
         for gi, g in enumerate(groups):
-            reps = sorted(g['items'], key=lambda x: x['score'] * min(x['size'], 300), reverse=True)[:REPS_PER_PERSON]
+            members = [faces[k] for k in g['faces']]
+            # rostos enviados: os melhores, de momentos diferentes do vídeo
+            reps, seen = [], set()
+            for f in sorted(members, key=lambda f: -f['q']):
+                tk = round(f['t'] / 3)
+                if tk in seen and len(members) > REPS_PER_PERSON:
+                    continue
+                seen.add(tk); reps.append(f)
+                if len(reps) >= REPS_PER_PERSON:
+                    break
             for r in reps:
                 jpg = cv2.imencode('.jpg', r['crop'], [cv2.IMWRITE_JPEG_QUALITY, 85])[1].tobytes() if r['crop'] is not None else b''
                 out.append({
-                    't': round(r['t'], 2), 'score': round(r['score'], 3), 'n': len(g['items']), 'group': gi,
+                    't': round(r['t'], 2), 'score': round(r['score'], 3), 'q': r['q'], 'n': len(members), 'group': gi,
                     'box': [round(float(v), 1) for v in r['box']],
                     'emb': base64.b64encode(r['emb'].astype('<f4').tobytes()).decode(),
                     'crop': base64.b64encode(jpg).decode() if jpg else None,
                 })
-        return {'path': job['path'], 'key': job['key'], 'frames': nframes, 'faces': out,
+            meta.append({'g': gi, 'tpl': base64.b64encode(g['tpl'].astype('<f4').tobytes()).decode(),
+                         'q': round(g['q'], 3), 'n': len(members), 'tracks': g['ntracks'], 'co': g['co']})
+        return {'path': job['path'], 'key': job['key'], 'frames': nframes, 'faces': out, 'groups': meta, 'v': ANALYSIS_VERSION,
                 'ms': int((time.time() - t0) * 1000), 'people': len(groups)}
 
     def _prepare(self):

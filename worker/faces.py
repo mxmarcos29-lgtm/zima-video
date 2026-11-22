@@ -108,20 +108,29 @@ class FaceEngine:
             return None
         return cv2.warpAffine(img, M, (size, size), borderValue=0.0)
 
-    def embed(self, faces112):
-        """faces112: lista de rostos alinhados BGR 112x112 → matriz Nx512 normalizada."""
+    def embed(self, faces112, flip=True):
+        """faces112: rostos alinhados BGR 112x112 → (Nx512 normalizada, norma bruta por rosto).
+        flip: soma a assinatura do rosto com a do rosto espelhado (prática padrão na avaliação do ArcFace:
+        deixa a assinatura mais estável a pose e iluminação de um lado só). A norma bruta (antes de
+        normalizar) acompanha a "reconhecibilidade" do rosto e entra na nota de qualidade."""
         if not faces112:
-            return np.zeros((0, 512), dtype=np.float32)
-        blob = cv2.dnn.blobFromImages(faces112, 1.0 / 127.5, (112, 112), (127.5, 127.5, 127.5), swapRB=True)
+            return np.zeros((0, 512), dtype=np.float32), np.zeros((0,), dtype=np.float32)
+        imgs = list(faces112) + ([cv2.flip(f, 1) for f in faces112] if flip else [])
+        blob = cv2.dnn.blobFromImages(imgs, 1.0 / 127.5, (112, 112), (127.5, 127.5, 127.5), swapRB=True)
         out = []
         for i in range(0, len(blob), 32):
-            e = self.rec.run(None, {self.rec_in: blob[i:i + 32]})[0]
-            out.append(e)
+            out.append(self.rec.run(None, {self.rec_in: blob[i:i + 32]})[0])
         e = np.concatenate(out).astype(np.float32)
-        return e / np.maximum(np.linalg.norm(e, axis=1, keepdims=True), 1e-9)
+        n = len(faces112)
+        norms = np.linalg.norm(e, axis=1)
+        if flip:
+            e = e[:n] + e[n:]
+            norms = (norms[:n] + norms[n:]) / 2
+        e = e / np.maximum(np.linalg.norm(e, axis=1, keepdims=True), 1e-9)
+        return e, norms.astype(np.float32)
 
-    def analyze(self, img, min_size=40, min_score=0.6):
-        """Rostos de uma imagem: [{box, score, kps, emb, aligned}]"""
+    def analyze(self, img, min_size=36, min_score=0.55, flip=True):
+        """Rostos de uma imagem: [{box, score, kps, emb, aligned, q, qd}] (q = qualidade 0..1)"""
         found = []
         for box, score, kps in self.detect(img):
             if score < min_score:
@@ -133,10 +142,36 @@ class FaceEngine:
             if a is None:
                 continue
             found.append({'box': box, 'score': score, 'kps': kps, 'aligned': a})
-        embs = self.embed([f['aligned'] for f in found])
-        for f, e in zip(found, embs):
+        embs, norms = self.embed([f['aligned'] for f in found], flip=flip)
+        for f, e, nm in zip(found, embs, norms):
             f['emb'] = e
+            f['q'], f['qd'] = face_quality(f, float(nm))
         return found
+
+
+def face_quality(f, norm):
+    """Nota de qualidade (0..1) de um rosto, para pesar as assinaturas e escolher as melhores.
+    Junta o que os sistemas de fotos usam para descartar rostos ruins antes de agrupar:
+    nitidez, tamanho, rosto de frente (pelos 5 pontos), confiança da detecção e a norma da assinatura."""
+    x1, y1, x2, y2 = f['box']
+    size = float(min(x2 - x1, y2 - y1))
+    k = f['kps']
+    le, re, nose = k[0], k[1], k[2]
+    eye_d = max(1e-3, float(np.linalg.norm(re - le)))
+    mid = (le + re) / 2
+    yaw = abs(float(nose[0] - mid[0])) / eye_d                     # 0 = de frente; ~0,5+ = de perfil
+    mouth = (k[3] + k[4]) / 2
+    pitch = float(nose[1] - mid[1]) / max(1e-3, float(mouth[1] - mid[1]))   # ~0,55 de frente
+    # nitidez relativa ao contraste (rosto escuro mas nítido continua bom; borrado cai muito)
+    g = cv2.cvtColor(f['aligned'], cv2.COLOR_BGR2GRAY).astype(np.float64)[16:96, 16:96]
+    sharp = float(cv2.Laplacian(g, cv2.CV_64F).var() / (g.std() ** 2 + 1))
+    q_size = np.clip((size - 36) / (110 - 36), 0, 1)
+    q_pose = np.clip(1 - yaw / 0.55, 0, 1) * np.clip(1 - abs(pitch - 0.55) / 0.45, 0, 1)
+    q_sharp = np.clip(np.log10(max(sharp, 1e-4) / 0.004) / np.log10(0.08 / 0.004), 0, 1)
+    q_det = np.clip((f['score'] - 0.55) / (0.85 - 0.55), 0, 1)
+    q_norm = np.clip((norm - 15) / (25 - 15), 0, 1)
+    q = 0.40 * q_sharp + 0.20 * q_pose + 0.20 * q_norm + 0.10 * q_size + 0.10 * q_det
+    return round(float(q), 3), {'norm': round(norm, 1), 'yaw': round(yaw, 2), 'sharp': round(sharp, 3), 'size': round(size)}
 
 
 def face_crop(img, box, size=160):

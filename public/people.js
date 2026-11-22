@@ -65,6 +65,7 @@ const People = (() => {
 
   // ================================================================ por rosto
   async function renderFaces(body) {
+    if (isDesk()) return renderDesk(body);
     // as perguntas vêm primeiro: o cruzamento com as tags pode aprender rostos e mudar grupos/sugestões
     const qs0 = await api('people/questions').catch(() => ({ questions: [], learned: 0, auto: 0 }));
     const [st, cl, sg] = await Promise.all([api('people/status'), api('people/clusters'), api('people/suggestions')]);
@@ -91,6 +92,7 @@ const People = (() => {
     body.appendChild(card);
 
     // --- perguntas do cruzamento tags x rostos
+    if ((qs0.same || []).length) body.appendChild(sameSection(qs0.same));
     if (qs0.questions.length) body.appendChild(questionsSection(qs0));
     else if (qs0.auto) body.appendChild(el('div', 'pp-note pp-learned', `${icon('check')} ${qs0.auto} rosto(s) aprendidos sozinhos a partir das tags que os vídeos já tinham.`));
 
@@ -101,14 +103,14 @@ const People = (() => {
     if (!sug.length) s1.appendChild(el('div', 'pp-note', persons().length ? 'Nenhuma sugestão nova. Conforme o ajudante analisa mais vídeos, aparecem aqui os vídeos em que as pessoas que você nomeou foram reconhecidas.' : 'Dê nome a um grupo de rostos abaixo: depois disso, os vídeos em que essa pessoa aparece são sugeridos aqui.'));
     else {
       const all = el('button', 'btn primary pp-applyall', `Aplicar todas (${sug.length})`);
-      all.onclick = async () => { const r = await apiPost('people/apply', null, { pairs: sug }); Tags.apply(r); toast(`${r.applied} tag(s) aplicada(s)`); refresh(); };
+      all.onclick = async () => { const r = await apiPost('people/apply', null, { pairs: sug.map((x) => ({ path: x.path, tag: x.tag, face: x.face })) }); Tags.apply(r); toast(`${r.applied} tag(s) aplicada(s)`); refresh(); };
       s1.appendChild(all);
       const list = el('div', 'pp-sugs');
       for (const sgi of sug.slice(0, 200)) {
         const row = el('div', 'pp-sug');
-        row.innerHTML = `<img src="${crop(sgi.face)}" alt="" loading="lazy"><div class="pp-sug-t"><div class="pp-sug-n">${esc(stripExt(sgi.name))}</div><div class="pp-sug-m">${Tags.chip(sgi.tag)} <span>${pct(sgi.sim)} parecido</span></div></div>`;
+        row.innerHTML = `<img src="${crop(sgi.face)}" alt="" loading="lazy"><div class="pp-sug-t"><div class="pp-sug-n">${esc(stripExt(sgi.name))}</div><div class="pp-sug-m">${Tags.chip(sgi.tag)} <span>${pct(sgi.sim)} parecido</span>${sgi.conf === 'alta' ? '<span class="pd-conf alta">certeza alta</span>' : ''}${sgi.byName ? '<span class="pd-conf nome">nome no arquivo</span>' : ''}</div></div>`;
         const ok = el('button', 'icon-btn pp-ok', icon('check')); ok.title = 'Confirmar';
-        ok.onclick = () => { row.remove(); apiPost('people/apply', null, { pairs: [sgi] }).then((r) => Tags.apply(r), (e) => toast(e.message)); };
+        ok.onclick = () => { row.remove(); apiPost('people/apply', null, { pairs: [{ path: sgi.path, tag: sgi.tag, face: sgi.face }] }).then((r) => Tags.apply(r), (e) => toast(e.message)); };
         const no = el('button', 'icon-btn', icon('close')); no.title = 'Não é esta pessoa';
         // "não é esta pessoa": vira exemplo negativo dela (o sistema aprende a não confundir de novo)
         no.onclick = () => { row.remove(); apiPost('people/reject', null, { tag: sgi.tag, faces: [sgi.face], path: sgi.path }).catch((e) => toast(e.message)); };
@@ -153,8 +155,8 @@ const People = (() => {
   }
 
   // dar nome a um grupo de rostos
-  function nameSheet(c, tile) {
-    const gone = () => { if (tile) { tile.classList.add('pp-gone'); setTimeout(() => tile.remove(), 200); } };
+  function nameSheet(c, tile, onDone) {
+    const gone = () => { if (tile) { tile.classList.add('pp-gone'); setTimeout(() => tile.remove(), 200); } if (onDone) onDone(); };
     Sheet.open((b) => {
       Sheet.header(b, 'Quem é?');
       const faces = el('div', 'pp-sheet-faces');
@@ -699,6 +701,424 @@ const People = (() => {
       if (!names.length) b.appendChild(el('div', 'sheet-note', 'Nenhum.'));
       for (const n of names) Sheet.row(b, { ico: 'close', label: n, value: 'Voltar a sugerir', onClick: async () => { await apiPost('people/name-ignore', null, { names: [n], on: false }); if (after) after(); ignoredSheet(after); } });
     });
+  }
+
+
+  // ================================================================ perguntas "é a mesma pessoa?"
+  // (como o Google Fotos: um grupo sem nome quase parecido com alguém conhecido — você decide)
+  function sameCard(q) {
+    const card = el('div', 'pp-q pd-same');
+    const p = Tags.list.find((t) => t.name === q.tag);
+    card.innerHTML = `<div class="pp-q-h">Este grupo é ${Tags.chip(q.tag)}?</div>
+      <div class="pd-same-row"><div class="pp-faces pd-mosaic">${q.sample.slice(0, 4).map((id) => `<img src="${crop(id)}" alt="" loading="lazy">`).join('')}</div>
+      <span class="pd-vs">?</span><div class="pd-same-p"><span class="pp-avatar pd-av" style="--c:${p ? p.color : '#888'}"></span><b>${esc(q.tag)}</b></div></div>
+      <div class="pp-note">${q.videos} vídeo(s) · ${pct(q.sim)} parecido — na dúvida, não marquei sozinho</div>`;
+    api('people/person', { tag: q.tag }).then((r) => { if (r.faces[0]) $('.pd-av', card).innerHTML = `<img src="${crop(r.faces[0])}" alt="">`; }).catch(() => {});
+    $('.pd-mosaic', card).onclick = () => zoom(q.faces.slice(0, 30), 0);
+    $('.pd-mosaic', card).title = 'Ampliar';
+    const acts = el('div', 'pp-actions');
+    const yes = el('button', 'btn primary', `${icon('check')}Sim, é ${esc(q.tag)}`);
+    const no = el('button', 'btn', `${icon('close')}Não é`);
+    yes.onclick = () => { card.classList.add('pp-gone'); apiPost('people/name', null, { faces: q.faces, name: q.tag, apply: true }).then((r) => { Tags.apply(r); toast(`Aprendido: ${q.tag}`); refresh(); }, (e) => { card.classList.remove('pp-gone'); toast(e.message); }); };
+    no.onclick = () => { card.classList.add('pp-gone'); apiPost('people/reject', null, { tag: q.tag, faces: q.faces.slice(0, 30) }).then(refresh, (e) => { card.classList.remove('pp-gone'); toast(e.message); }); };
+    acts.append(yes, no); card.appendChild(acts);
+    return card;
+  }
+  function sameSection(list) {
+    const sec = el('section', 'pp-sec');
+    sec.appendChild(el('h2', '', `É a mesma pessoa? <small>${list.length}</small>`));
+    const g = el('div', 'pd-same-grid');
+    for (const q of list) g.appendChild(sameCard(q));
+    sec.appendChild(g);
+    return sec;
+  }
+
+  // ================================================================ desktop
+  // Barra lateral com as pessoas + área principal (Revisar / Rostos sem nome / página da pessoa).
+  // Grades com seleção múltipla, atalhos de teclado, confirmar/recusar em lote e arrastar grupos até a pessoa.
+  const deskMQ = matchMedia('(min-width: 1000px) and (pointer: fine)');
+  const isDesk = () => deskMQ.matches;
+  deskMQ.addEventListener('change', () => { if (open && tab === 'faces') render(); });
+  let deskView = 'review'; let deskData = null; let personQ = ''; let showSingles = false; let personTab = 'sugs';
+  const deskSel = new Set(); let lastClicked = null;
+
+  async function renderDesk(body) {
+    const qd = await api('people/questions').catch(() => ({ questions: [], same: [], learned: 0, auto: 0, total: 0 }));
+    const [st, cl, sg, pr] = await Promise.all([api('people/status'), api('people/clusters'), api('people/suggestions'), api('people/persons')]);
+    if (qd.learned) toast(`Aprendi ${qd.learned} rosto(s) a partir das tags dos vídeos`);
+    await Tags.load();
+    deskData = { qd, st, cl: cl.clusters, sg: sg.suggestions, persons: pr.persons };
+    if (deskView.person && !pr.persons.some((x) => x.tag === deskView.person)) deskView = 'review';
+    for (const k of [...deskSel]) if (!sg.suggestions.some((x) => sKey(x) === k) && !String(k).startsWith('c:') && !String(k).startsWith('r:')) deskSel.delete(k);
+    body.innerHTML = '';
+    const wrap = el('div', 'pd');
+    const side = el('aside', 'pd-side'); const main = el('section', 'pd-main');
+    wrap.append(side, main); body.appendChild(wrap);
+    deskSide(side);
+    await deskMain(main);
+  }
+  const sKey = (x) => `${x.path}|${x.tag}`;
+  const setView = (v) => { deskView = v; deskSel.clear(); lastClicked = null; refresh(); };
+
+  function deskSide(side) {
+    const { st, qd, cl, sg, persons } = deskData;
+    const w = st.workers.slice().sort((a, b) => b.lastSeen - a.lastSeen);
+    const online = w.find((x) => Date.now() - x.lastSeen < 3 * 60000);
+    const pctDone = st.videos ? Math.round((st.analyzed / st.videos) * 100) : 0;
+    const card = el('div', 'pd-status');
+    card.innerHTML = `<div><b>${st.analyzed}</b> de ${st.videos} vídeos analisados</div>
+      <div class="pp-progress"><div style="width:${pctDone}%"></div></div>
+      <div class="pp-sub"><i class="pd-dot ${online ? 'on' : ''}"></i>${w.length ? (online ? `${esc(online.name)} trabalhando` : `Ajudante desligado · visto ${ago(w[0].lastSeen)}`) : 'Nenhum ajudante conectado'}</div>
+      ${st.old ? `<div class="pp-sub">${st.old} vídeo(s) serão refeitos com a análise nova</div>` : ''}${st.failed ? `<div class="pp-sub">${st.failed} com erro</div>` : ''}`;
+    const acts = el('div', 'pd-status-b');
+    const a1 = el('button', 'pd-link', 'Ajudante (PC)'); a1.onclick = connectSheet;
+    const a2 = el('button', 'pd-link', `Pastas excluídas${st.excluded.length ? ` (${st.excluded.length})` : ''}`); a2.onclick = () => excludedSheet('faces');
+    acts.append(a1, a2);
+    if (st.failed) { const a3 = el('button', 'pd-link', 'Tentar de novo os com erro'); a3.onclick = async () => { await apiPost('people/reanalyze', null, { failed: true }); toast('Os vídeos com erro voltam para a fila'); refresh(); }; acts.appendChild(a3); }
+    card.appendChild(acts);
+    side.appendChild(card);
+
+    const nav = el('nav', 'pd-nav');
+    const rv = (qd.same || []).length + qd.total + sg.length;
+    const n1 = el('button', 'pd-nav-i' + (deskView === 'review' ? ' on' : ''), `${icon('check')}<span>Revisar</span>${rv ? `<b>${rv}</b>` : ''}`);
+    n1.onclick = () => setView('review');
+    const multi = cl.filter((c) => c.videos > 1).length;
+    const n2 = el('button', 'pd-nav-i' + (deskView === 'unnamed' ? ' on' : ''), `${icon('person')}<span>Rostos sem nome</span>${cl.length ? `<b>${multi || cl.length}</b>` : ''}`);
+    n2.onclick = () => setView('unnamed');
+    nav.append(n1, n2);
+    side.appendChild(nav);
+
+    const ph = el('div', 'pd-ph', `<span>Pessoas <small>${persons.length}</small></span>`);
+    side.appendChild(ph);
+    const search = el('div', 'move-search pd-psearch', `${icon('search')}<input type="search" placeholder="Buscar pessoa…" autocomplete="off">`);
+    const inp = $('input', search); inp.value = personQ;
+    side.appendChild(search);
+    const list = el('div', 'pd-plist');
+    const drawList = () => {
+      list.innerHTML = '';
+      const k = Tags.key(personQ);
+      for (const p of persons.filter((x) => !k || Tags.key(x.tag).includes(k))) {
+        const b = el('button', 'pd-p' + (deskView.person === p.tag ? ' on' : ''));
+        b.innerHTML = `<span class="pp-avatar pd-pav" style="--c:${p.color}">${p.face ? `<img src="${crop(p.face)}" alt="" loading="lazy">` : ''}</span><span class="pd-pn">${esc(p.tag)}</span>`
+          + `${p.sugg ? `<b class="pd-badge" title="sugestões para revisar">${p.sugg}</b>` : ''}<small>${p.count}</small>`;
+        b.onclick = () => { personTab = p.sugg ? 'sugs' : 'refs'; setView({ person: p.tag }); };
+        // soltar um grupo de rostos aqui = é esta pessoa
+        b.addEventListener('dragover', (ev) => { if (ev.dataTransfer.types.includes('text/zv-faces')) { ev.preventDefault(); b.classList.add('drop'); } });
+        b.addEventListener('dragleave', () => b.classList.remove('drop'));
+        b.addEventListener('drop', (ev) => {
+          ev.preventDefault(); b.classList.remove('drop');
+          let faces = []; try { faces = JSON.parse(ev.dataTransfer.getData('text/zv-faces')); } catch { return; }
+          document.querySelectorAll('.pd-cl.dragging, .pd-cl.sel').forEach((t) => t.classList.add('pp-gone'));
+          apiPost('people/name', null, { faces, name: p.tag, apply: true }).then((r) => { Tags.apply(r); toast(`Aprendido: ${p.tag}`); deskSel.clear(); refresh(); }, (e) => { toast(e.message); refresh(); });
+        });
+        list.appendChild(b);
+      }
+      if (!list.children.length) list.appendChild(el('div', 'pp-note', persons.length ? 'Ninguém com esse nome.' : 'Nenhuma pessoa ainda. Dê nome a um grupo em “Rostos sem nome”.'));
+    };
+    inp.addEventListener('input', () => { personQ = inp.value; drawList(); });
+    drawList();
+    side.appendChild(list);
+  }
+
+  async function deskMain(main) {
+    const { qd, cl, sg } = deskData;
+    if (deskView === 'review') {
+      main.appendChild(el('div', 'pd-h', `<h1>Revisar</h1><div class="pd-keys">Atalhos: <kbd>←</kbd><kbd>→</kbd><kbd>↑</kbd><kbd>↓</kbd> mover · <kbd>Espaço</kbd> selecionar · <kbd>Y</kbd> confirmar · <kbd>N</kbd> não é · <kbd>Z</kbd> ampliar · <kbd>P</kbd> ver no vídeo · <kbd>Ctrl</kbd>+<kbd>A</kbd> tudo</div>`));
+      if (!(qd.same || []).length && !qd.questions.length && !sg.length) {
+        main.appendChild(el('div', 'empty', `${icon('check')}Nada para revisar agora.<br><small>Conforme o ajudante analisa vídeos, aparecem aqui as sugestões e as dúvidas.</small>`));
+      }
+      if ((qd.same || []).length) main.appendChild(sameSection(qd.same));
+      if (qd.questions.length) main.appendChild(questionsSection(qd));
+      if (sg.length) {
+        const sec = el('section', 'pp-sec');
+        sec.appendChild(el('h2', '', `Sugestões <small>${sg.length}</small>`));
+        sec.appendChild(sugGrid(sg, true));
+        main.appendChild(sec);
+      }
+    } else if (deskView === 'unnamed') {
+      main.appendChild(el('div', 'pd-h', `<h1>Rostos sem nome</h1><div class="pd-keys">Clique para dar nome · <kbd>Ctrl</kbd>/<kbd>Shift</kbd>+clique para selecionar vários (mesma pessoa) · arraste um grupo até uma pessoa na barra lateral</div>`));
+      const singles = cl.filter((c) => c.videos === 1).length;
+      const tools = el('div', 'pd-tools');
+      if (singles) {
+        const t = el('label', 'pd-check', `<input type="checkbox"${showSingles ? ' checked' : ''}> Mostrar quem aparece em 1 vídeo só (${singles})`);
+        $('input', t).onchange = (e) => { showSingles = e.target.checked; refresh(); };
+        tools.appendChild(t);
+      }
+      main.appendChild(tools);
+      const list = cl.filter((c) => showSingles || c.videos > 1 || cl.every((x) => x.videos === 1));
+      if (!list.length) main.appendChild(el('div', 'empty', `${icon('person')}${deskData.st.analyzed ? 'Todos os rostos encontrados já têm nome (ou foram ignorados).' : 'Os grupos aparecem aqui conforme o ajudante analisa os vídeos.'}`));
+      main.appendChild(clusterGrid(list));
+    } else if (deskView.person) {
+      await personPage(main, deskView.person);
+    }
+    main.appendChild(bulkBar());
+    updateBulk();
+  }
+
+  // ---------- grade de sugestões
+  function sugGrid(list, byPerson) {
+    const box = el('div', 'pd-sugs');
+    const groups = new Map();
+    for (const x of list) { const k = byPerson ? x.tag : ''; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(x); }
+    for (const [tag, items] of groups) {
+      if (byPerson) {
+        const p = deskData.persons.find((x) => x.tag === tag);
+        const hi = items.filter((x) => x.conf === 'alta');
+        const h = el('div', 'pd-gh');
+        h.innerHTML = `<button class="pd-gh-p"><span class="pp-avatar pd-pav" style="--c:${p ? p.color : '#888'}">${p && p.face ? `<img src="${crop(p.face)}" alt="">` : ''}</span><b>${esc(tag)}</b></button><small>${items.length} vídeo(s)</small>`;
+        $('.pd-gh-p', h).onclick = () => { personTab = 'sugs'; setView({ person: tag }); };
+        if (hi.length) { const b = el('button', 'btn', `${icon('check')}Confirmar as de certeza alta (${hi.length})`); b.onclick = () => confirmItems(hi); h.appendChild(b); }
+        const all = el('button', 'btn', `Selecionar as ${items.length}`); all.onclick = () => { items.forEach((x) => deskSel.add(sKey(x))); syncSel(); };
+        h.appendChild(all);
+        box.appendChild(h);
+      }
+      const grid = el('div', 'pd-grid');
+      for (const x of items) grid.appendChild(sugTile(x));
+      box.appendChild(grid);
+    }
+    return box;
+  }
+  function sugTile(x) {
+    const t = el('div', 'pd-tile' + (deskSel.has(sKey(x)) ? ' sel' : ''));
+    t.tabIndex = 0; t._item = x; t.dataset.key = sKey(x);
+    t.innerHTML = `<div class="pd-img"><img src="${crop(x.face)}" alt="" loading="lazy"><span class="pd-chk">${icon('check')}</span>
+        <div class="pd-acts"><button data-a="ok" title="É ${esc(x.tag)} (Y)">${icon('check')}</button><button data-a="no" title="Não é (N)">${icon('close')}</button><button data-a="zoom" title="Ampliar (Z)">${icon('search')}</button><button data-a="play" title="Ver no vídeo (P)">${icon('play')}</button></div></div>
+      <div class="pd-tn" title="${esc(x.name)}">${esc(stripExt(x.name))}</div>
+      <div class="pd-tm">${deskView === 'review' ? `${esc(x.tag)} · ` : ''}${pct(x.sim)}${x.conf === 'alta' ? ' <span class="pd-conf alta">alta</span>' : ''}${x.byName ? ' <span class="pd-conf nome" title="o nome da pessoa está no nome do arquivo">nome</span>' : ''}</div>`;
+    t.addEventListener('click', (ev) => {
+      const a = ev.target.closest('[data-a]');
+      if (a) { ev.stopPropagation(); return tileAction(a.dataset.a, [x], t); }
+      clickSelect(t, ev);
+    });
+    t.addEventListener('dblclick', () => zoom(x.faces && x.faces.length ? x.faces : [x.face], 0, { label: `É ${x.tag}`, run: () => confirmItems([x]) }));
+    t.addEventListener('focus', () => { lastFocus = t; });
+    return t;
+  }
+  let lastFocus = null;
+  function tileAction(a, items, t) {
+    if (a === 'ok') confirmItems(items);
+    else if (a === 'no') rejectItems(items);
+    else if (a === 'zoom') { const x = items[0]; zoom(x.faces && x.faces.length ? x.faces : [x.face], 0, { label: `É ${x.tag}`, run: () => confirmItems([x]) }); }
+    else if (a === 'play') playFace(items[0].face);
+  }
+  function tilesOf(keys) { return [...document.querySelectorAll('.pd-main .pd-tile')].filter((t) => keys.includes(t.dataset.key)); }
+  function vanish(keys) { tilesOf(keys).forEach((t) => { t.classList.add('pp-gone'); setTimeout(() => t.remove(), 180); }); keys.forEach((k) => deskSel.delete(k)); updateBulk(); }
+  function confirmItems(items) {
+    if (!items.length) return;
+    vanish(items.map(sKey));
+    apiPost('people/apply', null, { pairs: items.map((x) => ({ path: x.path, tag: x.tag, face: x.face })) })
+      .then((r) => { Tags.apply(r); toast(`${r.applied} vídeo(s) marcados`); refresh(); }, (e) => { toast(e.message); refresh(); });
+  }
+  function rejectItems(items) {
+    if (!items.length) return;
+    vanish(items.map(sKey));
+    Promise.all(items.map((x) => apiPost('people/reject', null, { tag: x.tag, faces: x.faces && x.faces.length ? x.faces.slice(0, 3) : [x.face], path: x.path })))
+      .then(() => { toast(`${items.length} recusada(s) — vou evitar esse engano`); refresh(); }, (e) => { toast(e.message); refresh(); });
+  }
+
+  // ---------- seleção (clique, Ctrl/Cmd, Shift) e teclado
+  function clickSelect(t, ev) {
+    const tiles = [...t.closest('.pd-main').querySelectorAll('.pd-tile, .pd-cl')];
+    const k = t.dataset.key;
+    if (ev.shiftKey && lastClicked) {
+      const a = tiles.indexOf(lastClicked); const b = tiles.indexOf(t);
+      if (a >= 0 && b >= 0) for (const x of tiles.slice(Math.min(a, b), Math.max(a, b) + 1)) deskSel.add(x.dataset.key);
+    } else if (ev.ctrlKey || ev.metaKey || deskSel.size || t.classList.contains('pd-tile')) {
+      if (deskSel.has(k)) deskSel.delete(k); else deskSel.add(k);
+    }
+    lastClicked = t; t.focus({ preventScroll: true });
+    syncSel();
+  }
+  function syncSel() {
+    document.querySelectorAll('.pd-main .pd-tile, .pd-main .pd-cl').forEach((x) => x.classList.toggle('sel', deskSel.has(x.dataset.key)));
+    updateBulk();
+  }
+  function bulkBar() {
+    const bar = el('div', 'pd-bulk hidden');
+    bar.innerHTML = '<span class="pd-bulk-n"></span><div class="pd-bulk-b"></div>';
+    return bar;
+  }
+  function updateBulk() {
+    const bar = document.querySelector('.pd-main .pd-bulk'); if (!bar) return;
+    const keys = [...deskSel];
+    bar.classList.toggle('hidden', !keys.length);
+    if (!keys.length) return;
+    const b = $('.pd-bulk-b', bar); b.innerHTML = '';
+    $('.pd-bulk-n', bar).textContent = `${keys.length} selecionado(s)`;
+    const clusters = keys.filter((k) => k.startsWith('c:'));
+    const refsSel = keys.filter((k) => k.startsWith('r:'));
+    if (clusters.length) {
+      const nm = el('button', 'btn primary', `${icon('edit')}Dar nome (mesma pessoa)`); nm.onclick = () => nameClusters(clusters.map((k) => deskData.cl.find((c) => `c:${c.id}` === k)).filter(Boolean));
+      const ig = el('button', 'btn', 'Ignorar'); ig.onclick = () => {
+        const cs = clusters.map((k) => deskData.cl.find((c) => `c:${c.id}` === k)).filter(Boolean);
+        vanishCl(clusters); apiPost('people/ignore', null, { faces: cs.flatMap((c) => c.faces) }).then(refresh, (e) => { toast(e.message); refresh(); });
+      };
+      b.append(nm, ig);
+    } else if (refsSel.length) {
+      const rm = el('button', 'btn', `${icon('close')}Não é ${esc(deskView.person)} — remover`); rm.onclick = () => {
+        const ids = refsSel.map((k) => k.slice(2));
+        document.querySelectorAll('.pd-main .pd-ref').forEach((t) => { if (deskSel.has(t.dataset.key)) t.remove(); });
+        deskSel.clear(); updateBulk();
+        apiPost('people/unlink', null, { tag: deskView.person, faces: ids }).then(refresh, (e) => toast(e.message));
+      };
+      b.append(rm);
+    } else {
+      const items = keys.map((k) => deskData.sg.find((x) => sKey(x) === k)).filter(Boolean);
+      const ok = el('button', 'btn primary', `${icon('check')}Confirmar (Y)`); ok.onclick = () => confirmItems(items);
+      const no = el('button', 'btn', `${icon('close')}Não é (N)`); no.onclick = () => rejectItems(items);
+      b.append(ok, no);
+    }
+    const clr = el('button', 'pd-link', 'Limpar seleção (Esc)'); clr.onclick = () => { deskSel.clear(); syncSel(); };
+    b.appendChild(clr);
+  }
+  function moveFocus(dir) {
+    const tiles = [...document.querySelectorAll('.pd-main .pd-tile, .pd-main .pd-cl, .pd-main .pd-ref')];
+    if (!tiles.length) return;
+    const cur = tiles.includes(document.activeElement) ? document.activeElement : null;
+    if (!cur) { tiles[0].focus(); return; }
+    const i = tiles.indexOf(cur);
+    let next = null;
+    if (dir === 'left') next = tiles[i - 1];
+    else if (dir === 'right') next = tiles[i + 1];
+    else {
+      const r = cur.getBoundingClientRect(); const cx = r.left + r.width / 2;
+      const cand = tiles.filter((t) => { const q = t.getBoundingClientRect(); return dir === 'down' ? q.top > r.bottom - 4 : q.bottom < r.top + 4; });
+      let bestD = 1e9;
+      for (const t of cand) {
+        const q = t.getBoundingClientRect();
+        const dy = dir === 'down' ? q.top - r.bottom : r.top - q.bottom;
+        const d = dy * 4 + Math.abs(q.left + q.width / 2 - cx);
+        if (d < bestD) { bestD = d; next = t; }
+      }
+    }
+    if (next) { next.focus(); next.scrollIntoView({ block: 'nearest' }); }
+  }
+  document.addEventListener('keydown', (ev) => {
+    if (!open || tab !== 'faces' || !isDesk()) return;
+    if (!$('#sheet').classList.contains('hidden') || (fz && !fz.classList.contains('hidden'))) return;
+    if (ev.target.closest && ev.target.closest('input, textarea, select')) return;
+    const k = ev.key;
+    const f = document.activeElement && document.activeElement.closest && document.activeElement.closest('.pd-tile, .pd-cl, .pd-ref');
+    const arrows = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down' };
+    if (arrows[k]) { ev.preventDefault(); moveFocus(arrows[k]); return; }
+    if (k === 'Escape' && deskSel.size) { ev.preventDefault(); ev.stopPropagation(); deskSel.clear(); syncSel(); return; }
+    if ((ev.ctrlKey || ev.metaKey) && k.toLowerCase() === 'a') {
+      ev.preventDefault();
+      document.querySelectorAll('.pd-main .pd-tile, .pd-main .pd-cl, .pd-main .pd-ref').forEach((t) => deskSel.add(t.dataset.key));
+      syncSel(); return;
+    }
+    if (k === ' ' && f) { ev.preventDefault(); const key = f.dataset.key; if (deskSel.has(key)) deskSel.delete(key); else deskSel.add(key); lastClicked = f; syncSel(); return; }
+    const items = deskSel.size ? [...deskSel].map((x) => deskData.sg.find((s0) => sKey(s0) === x)).filter(Boolean) : (f && f._item ? [f._item] : []);
+    const lower = k.toLowerCase();
+    if ((lower === 'y' || k === 'Enter') && items.length) { ev.preventDefault(); const nx = neighbor(f); confirmItems(items); if (nx) setTimeout(() => nx.focus(), 200); }
+    else if ((lower === 'n' || k === 'Delete') && items.length) { ev.preventDefault(); const nx = neighbor(f); rejectItems(items); if (nx) setTimeout(() => nx.focus(), 200); }
+    else if (lower === 'z' && f && f._item) { ev.preventDefault(); tileAction('zoom', [f._item]); }
+    else if (lower === 'p' && f && f._item) { ev.preventDefault(); tileAction('play', [f._item]); }
+    else if (k === 'Enter' && f && f._cluster) { ev.preventDefault(); nameSheet(f._cluster, f); }
+  }, true);
+  const neighbor = (f) => { if (!f) return null; const tiles = [...document.querySelectorAll('.pd-main .pd-tile')]; const i = tiles.indexOf(f); return tiles[i + 1] || tiles[i - 1] || null; };
+
+  // ---------- grade de grupos sem nome
+  function clusterGrid(list) {
+    const grid = el('div', 'pd-cgrid');
+    for (const c of list) {
+      const t = el('div', 'pd-cl' + (deskSel.has(`c:${c.id}`) ? ' sel' : ''));
+      t.tabIndex = 0; t.dataset.key = `c:${c.id}`; t._cluster = c; t.draggable = true;
+      t.innerHTML = `<div class="pp-faces">${c.sample.slice(0, 4).map((id) => `<img src="${crop(id)}" alt="" loading="lazy" draggable="false">`).join('')}</div>
+        <span class="pd-chk">${icon('check')}</span><button class="pd-zoom" title="Ampliar">${icon('search')}</button>
+        <div class="pd-tn">${c.videos} vídeo${c.videos > 1 ? 's' : ''}</div><div class="pd-tm">${c.count} rosto(s)${c.q != null && c.q < 0.45 ? ' · <span title="rostos de baixa qualidade (borrados, pequenos ou de lado)">qualidade baixa</span>' : ''}</div>`;
+      $('.pd-zoom', t).onclick = (ev) => { ev.stopPropagation(); zoom(c.faces.slice(0, 40), 0); };
+      t.addEventListener('click', (ev) => {
+        if (ev.ctrlKey || ev.metaKey || ev.shiftKey || deskSel.size) return clickSelect(t, ev);
+        nameSheet(c, t);
+      });
+      t.addEventListener('dragstart', (ev) => {
+        const sel = deskSel.has(t.dataset.key) ? [...deskSel].map((k) => deskData.cl.find((x) => `c:${x.id}` === k)).filter(Boolean) : [c];
+        ev.dataTransfer.setData('text/zv-faces', JSON.stringify(sel.flatMap((x) => x.faces)));
+        ev.dataTransfer.effectAllowed = 'copy';
+        t.classList.add('dragging'); document.body.classList.add('pd-dragging');
+      });
+      t.addEventListener('dragend', () => { t.classList.remove('dragging'); document.body.classList.remove('pd-dragging'); });
+      grid.appendChild(t);
+    }
+    return grid;
+  }
+  function vanishCl(keys) { document.querySelectorAll('.pd-main .pd-cl').forEach((t) => { if (keys.includes(t.dataset.key)) { t.classList.add('pp-gone'); setTimeout(() => t.remove(), 180); } }); keys.forEach((k) => deskSel.delete(k)); updateBulk(); }
+  function nameClusters(cs) {
+    if (!cs.length) return;
+    nameSheet({ faces: cs.flatMap((c) => c.faces), count: cs.reduce((a, c) => a + c.count, 0), videos: cs.reduce((a, c) => a + c.videos, 0) }, null, () => vanishCl(cs.map((c) => `c:${c.id}`)));
+  }
+
+  // ---------- página da pessoa
+  async function personPage(main, tag) {
+    const p = deskData.persons.find((x) => x.tag === tag) || { tag, count: 0 };
+    const t = Tags.list.find((x) => x.name === tag) || { name: tag, color: '#888', aliases: [] };
+    const r = await api('people/person', { tag });
+    const head = el('div', 'pd-person-h');
+    head.innerHTML = `<span class="pp-avatar pd-big" style="--c:${t.color}">${p.face ? `<img src="${crop(p.face)}" alt="">` : ''}</span>
+      <div class="pd-ph-t"><h1>${esc(tag)}</h1><div class="pp-sub">${p.count} vídeo(s) com a tag · ${r.faces.length} rosto(s) de referência${r.neg ? ` · ${r.neg} “não é”` : ''}${(t.aliases || []).length ? ` · também: ${esc(t.aliases.join(', '))}` : ''}${p.thr && p.thr > 0.43 ? ` · exigência aumentada (pessoa parecida com outras)` : ''}</div></div>`;
+    const acts = el('div', 'pd-ph-a');
+    const b1 = el('button', 'btn', `${icon('tag')}Ver vídeos`); b1.onclick = () => { close(); whenHistoryIdle(() => Tags.openView(tag)); };
+    const b2 = el('button', 'btn', `${icon('edit')}Nome, cor e juntar`); b2.onclick = () => Tags.manage(t, null);
+    const b3 = el('button', 'btn', 'Apelidos'); b3.onclick = () => aliasSheet(t);
+    acts.append(b1, b2, b3);
+    const nb = (r.bad || []).length; const na = (r.auto || []).length;
+    const fix = async (only, msg) => { const x = await apiPost('people/reset-auto', null, { tag, only }); toast(`${x.removed} ${msg}`); refresh(); };
+    if (nb) { const b = el('button', 'btn', `Remover ${nb} suspeito(s)`); b.onclick = () => fix('bad', 'rosto(s) suspeito(s) removido(s)'); acts.appendChild(b); }
+    if (na) { const b = el('button', 'btn', `Desfazer aprendido sozinho (${na})`); b.onclick = () => fix('auto', 'rosto(s) removido(s)'); acts.appendChild(b); }
+    head.appendChild(acts);
+    main.appendChild(head);
+
+    const sugs = deskData.sg.filter((x) => x.tag === tag);
+    const tabs = el('div', 'chips pd-tabs');
+    for (const [k, label] of [['sugs', `Sugestões (${sugs.length})`], ['refs', `Rostos de referência (${r.faces.length})`], ['vids', `Vídeos (${p.count})`]]) {
+      const c = el('button', 'chip' + (personTab === k ? ' active' : ''), label);
+      c.onclick = () => { personTab = k; deskSel.clear(); refresh(); };
+      tabs.appendChild(c);
+    }
+    main.appendChild(tabs);
+    if (personTab === 'sugs') {
+      if (!sugs.length) main.appendChild(el('div', 'pp-note', 'Nenhuma sugestão nova para esta pessoa.'));
+      else {
+        const hi = sugs.filter((x) => x.conf === 'alta');
+        const tl = el('div', 'pd-tools');
+        if (hi.length) { const b = el('button', 'btn primary', `${icon('check')}Confirmar as de certeza alta (${hi.length})`); b.onclick = () => confirmItems(hi); tl.appendChild(b); }
+        const a = el('button', 'btn', `Selecionar todas (${sugs.length})`); a.onclick = () => { sugs.forEach((x) => deskSel.add(sKey(x))); syncSel(); };
+        tl.appendChild(a); main.appendChild(tl);
+        main.appendChild(sugGrid(sugs, false));
+      }
+    } else if (personTab === 'refs') {
+      main.appendChild(el('div', 'pp-note', 'Rostos usados para reconhecer esta pessoa. Selecione os que estão errados e remova — eles passam a ensinar quem ela NÃO é. Os “suspeitos” destoam dos outros e já não são usados.'));
+      const g = el('div', 'pd-grid');
+      r.faces.forEach((id, i) => {
+        const bad = (r.bad || []).includes(id); const auto = (r.auto || []).includes(id);
+        const tile = el('div', 'pd-tile pd-ref' + (bad ? ' bad' : '') + (deskSel.has(`r:${id}`) ? ' sel' : ''));
+        tile.tabIndex = 0; tile.dataset.key = `r:${id}`;
+        tile.innerHTML = `<div class="pd-img"><img src="${crop(id)}" alt="" loading="lazy"><span class="pd-chk">${icon('check')}</span>
+          <div class="pd-acts"><button data-a="zoom" title="Ampliar">${icon('search')}</button><button data-a="play" title="Ver no vídeo">${icon('play')}</button></div></div>
+          <div class="pd-tm">${bad ? '<span class="pd-conf sus">suspeito</span>' : auto ? '<span class="pd-conf">auto</span>' : '<span class="pd-conf ok">confirmado</span>'}</div>`;
+        tile.addEventListener('click', (ev) => {
+          const a = ev.target.closest('[data-a]');
+          if (a) { ev.stopPropagation(); if (a.dataset.a === 'zoom') zoom(r.faces, i); else playFace(id); return; }
+          clickSelect(tile, ev);
+        });
+        tile.addEventListener('dblclick', () => zoom(r.faces, i));
+        g.appendChild(tile);
+      });
+      main.appendChild(g);
+    } else {
+      const v = await api('tags', { tag }).catch(() => ({ items: [] }));
+      const g = el('div', 'pd-vgrid');
+      for (const it of v.items) {
+        const c = el('button', 'pd-vid');
+        c.innerHTML = `<div class="pd-vthumb"><img alt="" loading="lazy"></div><div class="pd-tn">${esc(stripExt(it.name))}</div><div class="pd-tm">${esc(dirname(it.path))}</div>`;
+        if (it.type === 'video' || it.type === 'image') loadThumb($('img', c), it.path, it.mtime, 320); else $('img', c).remove();
+        c.onclick = () => P.open(it, { siblings: v.items.filter((x) => x.type === it.type) });
+        g.appendChild(c);
+      }
+      if (!v.items.length) g.appendChild(el('div', 'pp-note', 'Nenhum vídeo com esta tag ainda.'));
+      main.appendChild(g);
+    }
   }
 
   return { show, close, folderRow, loadExcluded, get open() { return open; } };

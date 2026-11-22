@@ -13,6 +13,12 @@ INSTALAR (uma vez)
     menu (tres pontos) -> Pessoas -> Conectar ajudante.
     (Os modelos de reconhecimento, ~290 MB, sao baixados sozinhos na primeira vez.)
 
+ANALISE v2 (esta versao)
+ - Le 3 quadros seguidos em cada ponto do video e acompanha cada rosto entre eles, calcula a assinatura
+   tambem com o rosto espelhado e da uma nota de qualidade a cada rosto (borrados quase nao contam).
+ - E mais trabalho por video (cerca de 2 a 3x), mas o reconhecimento fica bem mais confiavel.
+ - Os videos analisados pela versao antiga sao refeitos sozinhos, depois dos novos.
+
 ATUALIZAR (ja tinha uma versao anterior)
  - Extraia o .zip novo POR CIMA da pasta antiga e rode "instalar.bat" de novo.
    A configuracao (endereco e codigo) e os modelos ja baixados continuam.

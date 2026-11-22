@@ -97,6 +97,14 @@ Menu ⋮ → **Pessoas** (modo administrador). Só reconhece as pessoas que **vo
 - **Menos confusão entre pessoas:** um rosto só é reconhecido como a pessoa se concordar com vários rostos de referência dela (não basta parecer com um). Rostos de referência que destoam dos outros ficam marcados como **suspeito** e deixam de ser usados (nos rostos da pessoa há “Remover suspeitos” e “Desfazer o que foi aprendido sozinho”). Cada “não é esta pessoa” (✕ numa sugestão, remover um rosto, as outras opções de uma pergunta) vira um exemplo do que ela **não** é.
 - Qualquer tag pode ser marcada como **pessoa** (⋮ ao lado da tag → “É uma pessoa”, com outras formas do nome).
 
+### Como o reconhecimento funciona (análise v2)
+Inspirado no que o Apple Fotos e o Google Fotos descrevem publicamente, adaptado para vídeo:
+- **No PC (ajudante):** em cada ponto do vídeo lê uma rajada de 3 quadros seguidos e acompanha cada rosto entre eles (*trilha*: mesma trilha = mesma pessoa; rostos no mesmo quadro = pessoas diferentes). Cada rosto ganha uma **nota de qualidade** (nitidez, tamanho, rosto de frente, confiança da detecção e “força” da assinatura) e a assinatura é calculada com o rosto **espelhado** também. As aparições da mesma pessoa no vídeo são juntadas por agrupamento hierárquico respeitando essas regras, e a assinatura do grupo é a média ponderada pela qualidade — rostos borrados quase não contam.
+- **No servidor (cruzamento):** cada pessoa aparece no máximo uma vez por vídeo; pessoas do mesmo vídeo nunca são juntadas; o nome da pessoa no nome do arquivo deixa o reconhecimento dela um pouco menos exigente ali; cada pessoa tem um **limite próprio** que sobe quando há “não é ela” parecidos (sósias/parentes); rostos sem nome são agrupados em duas passadas (conservadora + junção de grupos). Cada sugestão vem com **certeza alta** ou média, e grupos quase parecidos com alguém viram a pergunta **“É a mesma pessoa?”**.
+- Ao atualizar o ajudante, os vídeos analisados pela versão antiga são refeitos sozinhos (depois dos novos), sem perder o que você já ensinou.
+
+**No computador**, a tela Pessoas tem barra lateral com as pessoas e as áreas *Revisar*, *Rostos sem nome* e a página de cada pessoa: grades com seleção múltipla (Ctrl/Shift+clique), confirmar/recusar em lote, atalhos (setas, Espaço, **Y** confirma, **N** não é, **Z** amplia, **P** abre o vídeo, Ctrl+A) e arrastar um grupo de rostos até uma pessoa.
+
 ### Instalar o ajudante no Windows
 1. No app: Pessoas → **Conectar ajudante** → *Baixar o ajudante (.zip)*.
 2. Extraia num lugar fixo e abra `instalar.bat` (instala o Python 3.12 e os componentes, cria o atalho **Zima Video Ajudante** e abre o programa; os modelos ~290 MB são baixados na primeira vez). Para atualizar, extraia o .zip novo por cima e rode o `instalar.bat` de novo.
