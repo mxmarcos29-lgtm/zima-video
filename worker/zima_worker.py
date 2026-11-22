@@ -25,6 +25,7 @@ import tempfile
 import threading
 import time
 import zipfile
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from urllib.parse import urljoin
 
@@ -49,7 +50,7 @@ LEVELS = {
     'pausado': {'nome': 'Pausado', 'duty': 0.0, 'parallel': 1, 'pause': 0, 'prio': 'idle'},
     'leve':    {'nome': 'Leve',    'duty': 0.25, 'parallel': 1, 'pause': 6, 'prio': 'idle'},
     'medio':   {'nome': 'Médio',   'duty': 0.6, 'parallel': 2, 'pause': 1, 'prio': 'below'},
-    'maximo':  {'nome': 'Máximo',  'duty': 1.0, 'parallel': 4, 'pause': 0, 'prio': 'below'},
+    'maximo':  {'nome': 'Máximo',  'duty': 1.0, 'parallel': max(4, min(8, os.cpu_count() or 4)), 'pause': 0, 'prio': 'below'},
 }
 LEVEL_ORDER = ['pausado', 'leve', 'medio', 'maximo']
 
@@ -171,10 +172,11 @@ def ffmpeg_path():
         return shutil.which('ffmpeg') or 'ffmpeg'
 
 
-def sample_times(duration, n):
+def sample_times(duration, n, every=8):
+    """n pontos espalhados pelo vídeo (no máximo um a cada `every` segundos)."""
     if duration <= 0:
         return [1.0]
-    n = int(max(6, min(n, duration / 8)))
+    n = int(max(6, min(n, duration / every)))
     a, b = duration * 0.03, duration * 0.97
     return [a + (b - a) * i / max(1, n - 1) for i in range(n)]
 
@@ -285,6 +287,7 @@ class Helper:
         self.current = None
         self._procs = set()
         self._lock = threading.Lock()
+        self.hwdec = bool(cfg.get('hwdec', True)); self.hwdec_fail = 0
 
     # --- controle
     def set_level(self, level):
@@ -368,9 +371,20 @@ class Helper:
         entre os quadros (uma "trilha"). O ffmpeg lê pela rede só o trecho necessário."""
         base = [self.ffmpeg, '-nostdin', '-hide_banner', '-loglevel', 'error',
                 '-headers', f'Authorization: Bearer {self.cfg["token"]}\r\n']
-        cmd = base + ['-ss', f'{t:.2f}', '-i', url, '-frames:v', str(n),
-                      '-vf', f"fps={1 / BURST_GAP:.3f},scale='min(1600,iw)':-2", '-f', 'image2pipe', '-vcodec', 'bmp', '-']
-        frames = split_bmps(self._ffmpeg(cmd))
+        # -noaccurate_seek: começa no quadro-chave mais próximo em vez de decodificar até o ponto exato
+        # (bem menos trabalho por trecho; o ponto fica no máximo alguns segundos antes)
+        tail = ['-noaccurate_seek', '-ss', f'{t:.2f}', '-i', url, '-frames:v', str(n),
+                '-vf', f"fps={1 / BURST_GAP:.3f},scale='min(1600,iw)':-2", '-f', 'image2pipe', '-vcodec', 'bmp', '-']
+        # decodificar o vídeo na própria placa (libera o processador para ler mais trechos ao mesmo tempo)
+        frames = []
+        if self.hwdec:
+            frames = split_bmps(self._ffmpeg(base + ['-hwaccel', 'auto'] + tail))
+            if not frames:
+                self.hwdec_fail += 1
+                if self.hwdec_fail >= 3 and self.hwdec:
+                    self.hwdec = False; self.say('Decodificação pela placa não funcionou com estes vídeos; usando o processador para ler os quadros.')
+        if not frames:
+            frames = split_bmps(self._ffmpeg(base + tail))
         if not frames:  # vídeo difícil de buscar: só o quadro-chave mais próximo
             cmd = base + ['-skip_frame', 'nokey', '-noaccurate_seek', '-ss', f'{t:.2f}', '-i', url, '-frames:v', '1',
                           '-vf', "scale='min(1600,iw)':-2", '-f', 'image2pipe', '-vcodec', 'bmp', '-']
@@ -384,25 +398,30 @@ class Helper:
 
     def analyze(self, job):
         url = urljoin(self.cfg['server'] + '/', job['url'].lstrip('/'))
-        times = sample_times(job.get('duration') or 0, self.cfg.get('frames', 30))
+        # com placa de vídeo sobra fôlego: mais pontos por vídeo (acha quem aparece pouco)
+        times = sample_times(job.get('duration') or 0, self.cfg.get('frames', 48 if self.eng.gpu else 30), 5 if self.eng.gpu else 8)
         t0 = time.time()
         faces = []    # todas as detecções: {t, frame, box, emb, q, score, crop}
         nframes = 0; fid = 0
         tracks = []   # listas de índices em faces (o mesmo rosto em quadros seguidos)
-        i = 0
-        while i < len(times):
-            self._wait_if_paused()
-            par = max(1, min(int(self.cfg.get('parallel', 4)), LEVELS[self.level]['parallel']))
-            batch = times[i:i + par]
-            tb = time.time()
-            with ThreadPoolExecutor(max_workers=par) as ex:
-                bursts = list(ex.map(lambda t: self._grab_burst(url, t), batch))
-            for burst in bursts:
+        # linha de produção: vários ffmpeg leem os próximos trechos ENQUANTO a placa analisa o trecho atual
+        # (antes a placa esperava cada lote ser lido — por isso ficava quase parada)
+        pending = deque(); nxt = 0; done_pts = 0
+        ex = ThreadPoolExecutor(max_workers=8)
+        busy = 0.0; tstart = time.time()
+        try:
+            while done_pts < len(times):
+                self._wait_if_paused()
+                par = max(1, min(int(self.cfg.get('parallel', 8)), LEVELS[self.level]['parallel']))
+                while nxt < len(times) and len(pending) < par * 2:   # adianta até 2 trechos por leitor
+                    pending.append(ex.submit(self._grab_burst, url, times[nxt])); nxt += 1
+                burst = pending.popleft().result()
+                tb = time.time()
+                found = self.eng.analyze_many([img for _, img in burst]) if burst else []
                 prev = []  # (índice da trilha, índice do rosto) no quadro anterior da rajada
-                for t, img in burst:
+                for (t, img), dets in zip(burst, found):
                     nframes += 1; fid += 1
                     cur = []
-                    dets = self.eng.analyze(img)
                     for f in dets:
                         k = len(faces)
                         faces.append({'t': t, 'frame': fid, 'box': f['box'], 'emb': f['emb'], 'q': f['q'], 'score': f['score'],
@@ -424,9 +443,15 @@ class Helper:
                             tracks[best].append(k)
                         used.add(best); now.append((best, k))
                     prev = now
-            i += len(batch)
-            self.emit('progress', {'frames': i, 'total': len(times)})
-            self._breathe(time.time() - tb)
+                done_pts += 1
+                work = time.time() - tb; busy += work
+                el = max(1e-3, time.time() - tstart)
+                self.emit('progress', {'frames': done_pts, 'total': len(times), 'fps': round(nframes / el, 1), 'busy': round(busy / el, 2)})
+                self._breathe(work)
+        finally:
+            for f in pending:
+                f.cancel()
+            ex.shutdown(wait=False, cancel_futures=True)
         groups = cluster_tracks(faces, tracks)
         out = []; meta = []
         for gi, g in enumerate(groups):

@@ -381,6 +381,8 @@ class App:
             self.state = data; self.render_state()
         elif kind == 'progress':
             self.pb.configure(value=100 * data['frames'] / max(1, data['total']))
+            if data.get('fps') is not None:
+                self.speed = data; self.render_state()
         elif kind == 'done':
             self.pb.configure(value=0); self.render_state()
         elif kind == 'server':
@@ -413,6 +415,10 @@ class App:
         if h:
             parts.append(f'Nesta sessão: {h.done} vídeo(s)' + (f', {h.failed} com erro' if h.failed else ''))
             if h.device: parts.append(f'Usando: {h.device}')
+            sp = getattr(self, 'speed', None)
+            if sp and self.state.get('state') == 'working':
+                parts.append(f'Velocidade: {sp["fps"]:.0f} quadros/s · análise ocupando {sp["busy"] * 100:.0f}% do tempo'
+                             + (' (o resto é leitura dos vídeos pela rede)' if sp['busy'] < 0.6 and h.level == 'maximo' else ''))
         if self.server_progress:
             p = self.server_progress
             parts.append(f'Biblioteca: {p.get("done", 0)} de {p.get("total", 0)} vídeos analisados')

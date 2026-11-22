@@ -86,6 +86,11 @@ def make_session(path, prefer_gpu=True):
     providers.append('CPUExecutionProvider')
     opts = ort.SessionOptions()
     opts.log_severity_level = 3
+    if 'DmlExecutionProvider' in providers:
+        # recomendação do onnxruntime para o DirectML: sem "memory pattern" e execução sequencial
+        # (sem isso o DirectML pode recusar operações — "O parâmetro está incorreto")
+        opts.enable_mem_pattern = False
+        opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
     try:
         return ort.InferenceSession(path, sess_options=opts, providers=providers)
     except Exception:
@@ -109,10 +114,13 @@ def _nms(dets, thresh=0.4):
 
 
 class FaceEngine:
-    def __init__(self, model_dir, prefer_gpu=True, det_size=640, log=None):
+    def __init__(self, model_dir, prefer_gpu=True, det_size=None, log=None):
         self.det = SafeSession(os.path.join(model_dir, 'det_10g.onnx'), prefer_gpu, log)
         self.rec = SafeSession(os.path.join(model_dir, 'w600k_r50.onnx'), prefer_gpu, log)
-        self.det_size = det_size
+        self.gpu = self.det.gpu
+        # 640 basta: rostos menores que ~36 px (o mínimo aceito) dão assinaturas ruins de qualquer jeito;
+        # a folga da placa vai para mais pontos por vídeo (testado: 960 não achou mais rostos úteis)
+        self.det_size = det_size or 640
         self.det_in = self.det.get_inputs()[0].name
         self.det_out = [o.name for o in self.det.get_outputs()]
         self.rec_in = self.rec.get_inputs()[0].name
@@ -180,8 +188,9 @@ class FaceEngine:
         imgs = list(faces112) + ([cv2.flip(f, 1) for f in faces112] if flip else [])
         blob = cv2.dnn.blobFromImages(imgs, 1.0 / 127.5, (112, 112), (127.5, 127.5, 127.5), swapRB=True)
         out = []
-        for i in range(0, len(blob), 16):
-            out.append(self.rec.run(None, {self.rec_in: blob[i:i + 16]})[0])
+        step = 64 if self.rec.gpu else 16
+        for i in range(0, len(blob), step):
+            out.append(self.rec.run(None, {self.rec_in: blob[i:i + step]})[0])
         e = np.concatenate(out).astype(np.float32)
         n = len(faces112)
         norms = np.linalg.norm(e, axis=1)
@@ -193,22 +202,31 @@ class FaceEngine:
 
     def analyze(self, img, min_size=36, min_score=0.55, flip=True):
         """Rostos de uma imagem: [{box, score, kps, emb, aligned, q, qd}] (q = qualidade 0..1)"""
-        found = []
-        for box, score, kps in self.detect(img):
-            if score < min_score:
-                continue
-            bw, bh = box[2] - box[0], box[3] - box[1]
-            if min(bw, bh) < min_size:
-                continue
-            a = self.align(img, kps)
-            if a is None:
-                continue
-            found.append({'box': box, 'score': score, 'kps': kps, 'aligned': a})
-        embs, norms = self.embed([f['aligned'] for f in found], flip=flip)
-        for f, e, nm in zip(found, embs, norms):
+        return self.analyze_many([img], min_size, min_score, flip)[0]
+
+    def analyze_many(self, imgs, min_size=36, min_score=0.55, flip=True):
+        """Vários quadros de uma vez: detecta em cada um e calcula as assinaturas de TODOS os rostos num
+        lote só (a placa de vídeo rende muito mais com lotes grandes do que com vários pedidos pequenos)."""
+        per = []
+        allf = []
+        for img in imgs:
+            found = []
+            for box, score, kps in self.detect(img):
+                if score < min_score:
+                    continue
+                bw, bh = box[2] - box[0], box[3] - box[1]
+                if min(bw, bh) < min_size:
+                    continue
+                a = self.align(img, kps)
+                if a is None:
+                    continue
+                found.append({'box': box, 'score': score, 'kps': kps, 'aligned': a})
+            per.append(found); allf += found
+        embs, norms = self.embed([f['aligned'] for f in allf], flip=flip)
+        for f, e, nm in zip(allf, embs, norms):
             f['emb'] = e
             f['q'], f['qd'] = face_quality(f, float(nm))
-        return found
+        return per
 
 
 def face_quality(f, norm):
