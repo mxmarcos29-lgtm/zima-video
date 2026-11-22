@@ -2327,8 +2327,23 @@ async function nextWorkerJob() {
       return { path: it.p, key: `${st.size}|${st.mtimeMs}`, duration, upgrade: true, url: `/api/worker/file?${new URLSearchParams({ path: it.p })}` };
     }
   }
+  // vídeos que deram erro (ex.: falha da placa de vídeo no PC, já contornada nas versões novas do ajudante):
+  // tenta de novo sozinho, até 2 vezes por vez que o servidor liga, depois de 10 minutos
+  for (const it of idx) {
+    if (it.t !== 'video' || faceExcluded(it.p)) continue;
+    const rec = faceVideos.get(it.p);
+    if (!rec || rec.status !== 'failed' || now - (rec.at || 0) < 10 * 60000) continue;
+    if ((workerJobs.get(it.p) || 0) > now || (workerRetry.get(it.p) || 0) >= 2) continue;
+    const abs = path.join(ROOT, it.p);
+    const st = await statSafe(abs); if (!st) continue;
+    let duration = 0; try { duration = (await probe(abs)).duration; } catch { continue; }
+    workerRetry.set(it.p, (workerRetry.get(it.p) || 0) + 1);
+    workerJobs.set(it.p, now + 15 * 60000);
+    return { path: it.p, key: `${st.size}|${st.mtimeMs}`, duration, retry: true, url: `/api/worker/file?${new URLSearchParams({ path: it.p })}` };
+  }
   return { none: true, wait: 60 };
 }
+const workerRetry = new Map();
 // reanálise de um vídeo: cada rosto antigo marcado (referência, negativo, ignorado...) passa para o rosto
 // novo mais parecido do mesmo vídeo (se for claramente o mesmo), para não perder o que o usuário ensinou
 function migrateFaceIdentity(oldFaces, newFaces) {

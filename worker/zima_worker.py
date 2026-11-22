@@ -32,7 +32,7 @@ import cv2
 import numpy as np
 import requests
 
-from faces import FaceEngine, face_crop
+from faces import FaceEngine, face_crop, readable_error
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CONFIG = os.path.join(HERE, 'config.json')
@@ -457,7 +457,7 @@ class Helper:
         self.emit('state', {'state': 'starting'})
         ensure_models(progress=self.say)
         self.ffmpeg = ffmpeg_path()
-        self.eng = FaceEngine(MODELS, prefer_gpu=not self.force_cpu)
+        self.eng = FaceEngine(MODELS, prefer_gpu=not self.force_cpu, log=self.say)
         self.device = {'DmlExecutionProvider': 'placa de vídeo (DirectML)', 'CUDAExecutionProvider': 'placa NVIDIA (CUDA)',
                        'CPUExecutionProvider': 'processador'}.get(self.eng.provider, self.eng.provider)
         self.cfg['_info'] = f'{socket.gethostname()} · {platform.system()} · {self.device}'
@@ -469,8 +469,8 @@ class Helper:
         try:
             self._prepare()
         except Exception as e:
-            self.emit('state', {'state': 'error', 'msg': f'Não consegui iniciar: {e}'})
-            self.say(f'Erro ao iniciar: {e}')
+            self.emit('state', {'state': 'error', 'msg': f'Não consegui iniciar: {readable_error(e)}'})
+            self.say(f'Erro ao iniciar: {readable_error(e)}')
             return
         fails = 0
         while not self._stop.is_set():
@@ -483,7 +483,7 @@ class Helper:
                     fails += 1
                     wait = min(300, 10 * fails)
                     self.emit('state', {'state': 'offline', 'msg': str(e)})
-                    self.say(f'Sem conexão com o servidor ({e}). Nova tentativa em {wait}s.')
+                    self.say(f'Sem conexão com o servidor ({readable_error(e)}). Nova tentativa em {wait}s.')
                     self._sleep(wait); continue
                 if job.get('progress'):
                     self.emit('server', job['progress'])
@@ -502,8 +502,9 @@ class Helper:
                     raise
                 except Exception as e:
                     self.failed += 1
-                    self.say(f'✗ {os.path.basename(job["path"])}: {e}')
-                    try: api(self.cfg, 'POST', '/api/worker/result', json={'path': job['path'], 'key': job['key'], 'faces': [], 'error': str(e)[:300]})
+                    msg = readable_error(e)
+                    self.say(f'✗ {os.path.basename(job["path"])}: {msg}')
+                    try: api(self.cfg, 'POST', '/api/worker/result', json={'path': job['path'], 'key': job['key'], 'faces': [], 'error': msg[:300]})
                     except Exception: pass
                 self.current = None
                 self._sleep(LEVELS[self.level]['pause'])

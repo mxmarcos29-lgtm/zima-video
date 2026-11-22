@@ -14,6 +14,68 @@ ARC_DST = np.array([[38.2946, 51.6963], [73.5318, 51.5014], [56.0252, 71.7366],
                     [41.5493, 92.3655], [70.7299, 92.2041]], dtype=np.float32)
 
 
+def readable_error(e):
+    """Mensagem de erro legível. No Windows em português, erros da placa de vídeo (DirectML) vêm em
+    cp1252 (ex.: "O parâmetro está incorreto") e o onnxruntime tenta ler como UTF-8, virando
+    "'utf-8' codec can't decode byte 0xe2...". Recupera o texto original quando dá."""
+    if isinstance(e, UnicodeDecodeError):
+        try:
+            return 'erro da placa de vídeo: ' + e.object.decode('cp1252', errors='replace').strip()[:300]
+        except Exception:
+            return 'erro da placa de vídeo (mensagem ilegível do Windows)'
+    return str(e)
+
+
+class SafeSession:
+    """Sessão do onnxruntime que não deixa um erro da placa de vídeo derrubar a análise:
+    1) se um lote falha na placa, tenta de novo um rosto por vez (alguns drivers recusam lotes);
+    2) se continua falhando, faz aquele pedaço no processador;
+    3) depois de várias falhas seguidas, passa esse modelo de vez para o processador."""
+
+    def __init__(self, path, prefer_gpu=True, log=None):
+        self.path = path
+        self.log = log or (lambda m: None)
+        self.sess = make_session(path, prefer_gpu)
+        self.cpu = None
+        self.fails = 0
+        self.gpu = self.sess.get_providers()[0] != 'CPUExecutionProvider'
+
+    def get_inputs(self): return self.sess.get_inputs()
+    def get_outputs(self): return self.sess.get_outputs()
+    def get_providers(self): return self.sess.get_providers()
+
+    def _cpu(self):
+        if self.cpu is None:
+            self.cpu = make_session(self.path, prefer_gpu=False)
+        return self.cpu
+
+    def run(self, names, feeds):
+        if not self.gpu:
+            return self.sess.run(names, feeds)
+        try:
+            out = self.sess.run(names, feeds)
+            self.fails = 0
+            return out
+        except Exception as e:  # inclui o UnicodeDecodeError do Windows em português
+            msg = readable_error(e)
+        # lote recusado pela placa: um por vez
+        name, arr = next(iter(feeds.items()))
+        if len(feeds) == 1 and getattr(arr, 'shape', (1,))[0] > 1:
+            try:
+                parts = [self.sess.run(names, {name: arr[i:i + 1]}) for i in range(arr.shape[0])]
+                self.fails = 0
+                return [np.concatenate([p[k] for p in parts]) for k in range(len(parts[0]))]
+            except Exception as e2:
+                msg = readable_error(e2)
+        self.fails += 1
+        if self.fails >= 3:
+            self.gpu = False; self.sess = self._cpu()
+            self.log(f'A placa de vídeo falhou várias vezes em {os.path.basename(self.path)} ({msg}). Continuando no processador.')
+        else:
+            self.log(f'A placa de vídeo falhou ({msg}); refeito no processador.')
+        return self._cpu().run(names, feeds)
+
+
 def make_session(path, prefer_gpu=True):
     avail = ort.get_available_providers()
     providers = []
@@ -47,9 +109,9 @@ def _nms(dets, thresh=0.4):
 
 
 class FaceEngine:
-    def __init__(self, model_dir, prefer_gpu=True, det_size=640):
-        self.det = make_session(os.path.join(model_dir, 'det_10g.onnx'), prefer_gpu)
-        self.rec = make_session(os.path.join(model_dir, 'w600k_r50.onnx'), prefer_gpu)
+    def __init__(self, model_dir, prefer_gpu=True, det_size=640, log=None):
+        self.det = SafeSession(os.path.join(model_dir, 'det_10g.onnx'), prefer_gpu, log)
+        self.rec = SafeSession(os.path.join(model_dir, 'w600k_r50.onnx'), prefer_gpu, log)
         self.det_size = det_size
         self.det_in = self.det.get_inputs()[0].name
         self.det_out = [o.name for o in self.det.get_outputs()]
@@ -118,8 +180,8 @@ class FaceEngine:
         imgs = list(faces112) + ([cv2.flip(f, 1) for f in faces112] if flip else [])
         blob = cv2.dnn.blobFromImages(imgs, 1.0 / 127.5, (112, 112), (127.5, 127.5, 127.5), swapRB=True)
         out = []
-        for i in range(0, len(blob), 32):
-            out.append(self.rec.run(None, {self.rec_in: blob[i:i + 32]})[0])
+        for i in range(0, len(blob), 16):
+            out.append(self.rec.run(None, {self.rec_in: blob[i:i + 16]})[0])
         e = np.concatenate(out).astype(np.float32)
         n = len(faces112)
         norms = np.linalg.norm(e, axis=1)
