@@ -1502,7 +1502,9 @@ let peopleDb = { refs: {}, ignored: {}, excluded: [], auto: {}, neg: {}, answere
 // pasta (ou algo dentro dela) excluída da análise de rosto?
 const faceExcluded = (rel) => peopleDb.excluded.some((x) => rel === x || rel.startsWith(x + '/'));
 const nameExcluded = (rel) => peopleDb.nameExcluded.some((x) => rel === x || rel.startsWith(x + '/'));
-let clusterCache = null;
+let clusterCache = null;   // grupos sem nome como a tela mostra (derivados da base; baratos de refazer)
+let clusterBase = null;    // agrupamento completo (caro): refeito quando chegam rostos novos ou por trás, com o app parado
+let clusterRebuildTimer = null;
 let faceVer = 0;               // muda quando chegam ou saem rostos
 let peopleVer = 0;             // muda a cada alteração em people.json
 let protoSeq = 0;
@@ -1516,6 +1518,7 @@ function indexFaces(rel, rec) {
   const old = faceVideos.get(rel);
   if (old) for (const f of old.faces) faceById.delete(f.id);
   groupRows.delete(rel); faceVer++;
+  if (clusterBase) clusterBase.dirty.add(rel);
   if (!rec) { faceVideos.delete(rel); clusterCache = null; return; }
   faceVideos.set(rel, rec);
   for (const f of rec.faces) faceById.set(f.id, { path: rel, face: f });
@@ -1541,7 +1544,13 @@ async function saveFaceVideo(rel, rec) {
   await saveJSON(file, { path: rel, key: rec.key, at: rec.at, frames: rec.frames, status: rec.status, v: rec.v || 1,
     faces: rec.faces.map((f) => ({ ...f, emb: embToB64(f.emb) })), groups: (rec.groups || []).map((g) => ({ ...g, tpl: embToB64(g.tpl) })) });
 }
-const savePeople = () => { clusterCache = null; peopleVer++; return saveJSON(PEOPLE_FILE, peopleDb); };
+const savePeople = () => {
+  clusterCache = null; peopleVer++;
+  // a base de grupos é refeita por trás, 45 s depois da última mudança (para quem perdeu o nome voltar aos grupos)
+  clearTimeout(clusterRebuildTimer);
+  clusterRebuildTimer = setTimeout(() => { if (clusterBase && clusterBase.pv !== peopleVer) { clusterBase = null; clusterCache = null; try { faceClusters(); } catch { /* ignora */ } } }, 45000);
+  return saveJSON(PEOPLE_FILE, peopleDb);
+};
 async function peopleTagRenamed(from, to) {
   // respostas ('caminho|tag') e bloqueios ('tag|rosto') acompanham a tag renomeada/juntada
   for (const k of ['answered', 'nameRejected']) {
@@ -1669,6 +1678,9 @@ const refTags = () => Object.keys(peopleDb.refs).filter((t) => protosOf(t).embs.
 // o centro dela; e perde se for mais parecido com um exemplo negativo dela.
 function scoreFor(mean, p) {
   if (!p.embs.length) return -1;
+  // atalho: a pontuação nunca passa de "centro + 0,12"; se nem assim chega perto dos limites usados,
+  // não precisa comparar com todos os rostos de referência (deixa tudo ~10x mais rápido)
+  if (p.center && p.embs.length > 1) { const c0 = dot(mean, p.center); if (c0 + 0.12 < 0.26) return c0 + 0.12 - 0.3; }
   let s1 = -1; let s2 = -1;
   for (const e of p.embs) { const x = dot(mean, e); if (x > s1) { s2 = s1; s1 = x; } else if (x > s2) s2 = x; }
   let sc;
@@ -1768,22 +1780,28 @@ function allAssignments() {
 const CLUSTER_STRICT = 0.55;
 function faceClusters() {
   if (clusterCache) return clusterCache;
+  if (!clusterBase) clusterBase = buildClusterBase();
+  applyClusterChanges();
+  // visão atual: tira dos grupos quem já tem nome, foi ignorado ou foi reconhecido (rápido)
+  const asg = allAssignments();
+  const named = new Set(Object.values(peopleDb.refs).flat());
+  clusterCache = clusterBase.clusters.map((c) => {
+    const rows = c.rows.filter((r) => !allIgnored(r) && !r.ids.some((id) => named.has(id)) && !asg.has(r.key));
+    if (!rows.length) return null;
+    const faces = rows.flatMap((r) => r.ids.filter((id) => !peopleDb.ignored[id]));
+    const q = Math.max(...rows.map((r) => r.q || 0.6));
+    return { id: c.id, faces, sample: rows.slice(0, 8).map((r) => r.ids[0]), count: faces.length, videos: new Set(rows.map((r) => r.rel)).size, q: +q.toFixed(2), _mean: c.mean };
+  }).filter((c) => c && c.faces.length).sort((a, b) => b.videos - a.videos || b.q - a.q);
+  return clusterCache;
+}
+function buildClusterBase() {
+  const pv = peopleVer;
   const asg = allAssignments();
   const named = new Set(Object.values(peopleDb.refs).flat());
   const pool = allRows().filter((r) => !allIgnored(r) && !r.ids.some((id) => named.has(id)) && !asg.has(r.key) && (r.q == null || r.q >= 0.3));
   pool.sort((a, b) => (b.q || 0.6) * Math.log2(1 + b.n) - (a.q || 0.6) * Math.log2(1 + a.n));
   const clusters = [];
-  const addTo = (c, r) => {
-    const w = Math.max(0.05, r.q || 0.6);
-    for (let i = 0; i < 512; i++) c.sum[i] += r.mean[i] * w;
-    c.mean = normalized(c.sum); c.rows.push(r); c.videos.add(r.rel);
-  };
-  for (const r of pool) {
-    let best = null; let bs = CLUSTER_STRICT;
-    for (const c of clusters) { if (c.videos.has(r.rel)) continue; const x = dot(r.mean, c.mean); if (x > bs) { bs = x; best = c; } }
-    if (!best) { best = { sum: new Float32Array(512), mean: null, rows: [], videos: new Set() }; clusters.push(best); }
-    addTo(best, r);
-  }
+  for (const r of pool) placeRow(clusters, r);
   // 2ª passada: junta grupos (no máximo os 1500 maiores, para o NAS não sofrer)
   const big = clusters.slice().sort((a, b) => b.rows.length - a.rows.length).slice(0, 1500);
   const pairs = [];
@@ -1802,13 +1820,41 @@ function faceClusters() {
     alive[j] = false;
   }
   const final = big.filter((_, i) => alive[i]).concat(clusters.filter((c) => !big.includes(c)));
-  clusterCache = final.map((c) => {
-    c.rows.sort((a, b) => (b.q || 0.6) - (a.q || 0.6));
-    const faces = c.rows.flatMap((r) => r.ids.filter((id) => !peopleDb.ignored[id]));
-    const q = Math.max(...c.rows.map((r) => r.q || 0.6));
-    return { id: faces[0], faces, sample: c.rows.slice(0, 8).map((r) => r.ids[0]), count: faces.length, videos: c.videos.size, q: +q.toFixed(2), _mean: c.mean };
-  }).filter((c) => c.faces.length).sort((a, b) => b.videos - a.videos || b.q - a.q);
-  return clusterCache;
+  for (const c of final) { c.rows.sort((a, b) => (b.q || 0.6) - (a.q || 0.6)); c.id = c.rows[0].ids[0]; }
+  return { pv, clusters: final, dirty: new Set() };
+}
+function addTo(c, r) {
+  const w = Math.max(0.05, r.q || 0.6);
+  for (let i = 0; i < 512; i++) c.sum[i] += r.mean[i] * w;
+  c.mean = normalized(c.sum); c.rows.push(r); c.videos.add(r.rel);
+}
+// põe um rosto (grupo do vídeo) no grupo sem nome mais parecido, ou cria um grupo novo
+function placeRow(clusters, r) {
+  let best = null; let bs = CLUSTER_STRICT;
+  for (const c of clusters) { if (c.videos.has(r.rel)) continue; const x = dot(r.mean, c.mean); if (x > bs) { bs = x; best = c; } }
+  if (!best) { best = { sum: new Float32Array(512), mean: null, rows: [], videos: new Set(), id: r.ids[0] }; clusters.push(best); }
+  addTo(best, r);
+}
+// vídeo novo (ou refeito) entra nos grupos existentes sem refazer tudo — o servidor não trava a cada vídeo do ajudante
+function applyClusterChanges() {
+  if (!clusterBase || !clusterBase.dirty.size) return;
+  const rels = clusterBase.dirty; clusterBase.dirty = new Set();
+  for (const c of clusterBase.clusters) {
+    if (![...rels].some((rel) => c.videos.has(rel))) continue;
+    const keep = c.rows.filter((r) => !rels.has(r.rel));
+    c.rows = []; c.videos = new Set(); c.sum = new Float32Array(512);
+    for (const r of keep) addTo(c, r);
+  }
+  clusterBase.clusters = clusterBase.clusters.filter((c) => c.rows.length);
+  const asg = allAssignments();
+  const named = new Set(Object.values(peopleDb.refs).flat());
+  for (const rel of rels) {
+    if (!faceVideos.has(rel) || faceExcluded(rel) || inCacheRel(rel)) continue;
+    for (const r of rowsOf(rel)) {
+      if (allIgnored(r) || r.ids.some((id) => named.has(id)) || asg.has(r.key) || (r.q != null && r.q < 0.3)) continue;
+      placeRow(clusterBase.clusters, r);
+    }
+  }
 }
 
 // sugestões de tags: pessoas reconhecidas em vídeos que ainda não têm a tag
@@ -2068,7 +2114,12 @@ function videoGroups(rel) {
 }
 const refSim = (mean, embs) => { let m = -1; for (const e of embs) { const x = dot(mean, e); if (x > m) m = x; } return m; };
 let learnTimer = null; let learnLast = null;
-function scheduleLearn() { clearTimeout(learnTimer); learnTimer = setTimeout(() => learnFromTags().catch((e) => console.error('learn', e)), 4000); }
+function scheduleLearn() { clearTimeout(learnTimer); learnTimer = setTimeout(warmPeople, 4000); }
+// deixa Pessoas pronta antes de alguém abrir: distribuição das pessoas, grupos sem nome e cruzamento com as tags
+async function warmPeople() {
+  if (!faceVideos.size) return;
+  try { await loadTags(); allAssignments(); faceClusters(); await learnFromTags(); sameQuestions(); } catch (e) { console.error('pessoas', e); }
+}
 // apoio de cada grupo dentro de uma tag: em quantos OUTROS vídeos com a mesma tag aparece um rosto parecido.
 // Só depende dos vídeos da tag e dos rostos (não das respostas), então fica em cache entre as confirmações.
 const supportCache = new Map(); // tag -> { key, fv, map: rowKey -> contagem }
@@ -2367,6 +2418,15 @@ function migrateFaceIdentity(oldFaces, newFaces) {
   }
   savePeople();
 }
+// recortes de rosto na memória (os mais usados), para a tela Pessoas abrir rápido
+const cropMem = new Map(); let cropMemBytes = 0;
+async function cropBytes(id) {
+  if (cropMem.has(id)) { const b = cropMem.get(id); cropMem.delete(id); cropMem.set(id, b); return b; }
+  let b; try { b = await fsp.readFile(path.join(PEOPLE_DIR, 'c', id.slice(0, 2), id + '.jpg')); } catch { return null; }
+  cropMem.set(id, b); cropMemBytes += b.length;
+  while (cropMemBytes > 48 * 1024 * 1024 && cropMem.size) { const [k, v] = cropMem.entries().next().value; cropMem.delete(k); cropMemBytes -= v.length; }
+  return b;
+}
 async function workerResult(body) {
   const rel = relOf(resolveSafe(body.path));
   if (!(await statSafe(path.join(ROOT, rel)))) throw new HttpError(404, 'Arquivo não existe mais');
@@ -2622,6 +2682,15 @@ const server = http.createServer(async (req, res) => {
         if (!f) throw new HttpError(404, 'Rosto não encontrado');
         return sendJSON(res, { id: f.face.id, path: f.path, name: path.posix.basename(f.path), t: f.face.t, score: f.face.score });
       }
+      case '/api/people/crops': {
+        // vários rostos de uma vez (a tela pede em lotes: bem mais rápido que um pedido por rosto)
+        await requireAdminGet(req);
+        const ids = String(q.get('ids') || '').split(',').map((x) => x.replace(/[^a-f0-9]/g, '')).filter(Boolean).slice(0, 120);
+        const out = {};
+        await Promise.all(ids.map(async (id) => { const b = await cropBytes(id); if (b) out[id] = b.toString('base64'); }));
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'private, max-age=86400' });
+        return res.end(JSON.stringify(out));
+      }
       case '/api/people/crop': {
         await requireAdminGet(req);
         const id = String(q.get('id') || '').replace(/[^a-f0-9]/g, '');
@@ -2703,6 +2772,7 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`Zima Video em http://0.0.0.0:${PORT}  (mídia: ${ROOT}, cache: ${CACHE}, hwaccel: ${HWACCEL})`);
   getIndex().catch((e) => console.warn('[busca] falha ao indexar:', e.message));
+  setTimeout(warmPeople, 5000); // calcula Pessoas logo depois de ligar (a primeira abertura fica rápida)
   loadTags().catch(() => {});
   loadViews().catch(() => {});
   adminEnabled().then((on) => console.log(on ? 'Modo administrador: ativado' : 'Modo administrador: sem senha (crie pelo menu ⋮ do app)'));

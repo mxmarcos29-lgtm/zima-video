@@ -15,6 +15,47 @@ const People = (() => {
   };
   const persons = () => Tags.list.filter((t) => t.person);
 
+  // ---------------------------------------------------------------- rostos (miniaturas) em lotes
+  // Cada <img data-crop="id"> é carregada quando aparece (ou está perto de aparecer) na tela. Os ids
+  // visíveis são pedidos juntos ao servidor (até 80 por pedido, 3 pedidos ao mesmo tempo) e ficam
+  // guardados nesta sessão: ao atualizar a tela, os rostos já vistos aparecem na hora.
+  const Crops = (() => {
+    const cache = new Map(); const want = new Map(); let inflight = 0; let timer = null;
+    const io = new IntersectionObserver((ents) => {
+      for (const e of ents) if (e.isIntersecting) { io.unobserve(e.target); need(e.target); }
+    }, { rootMargin: '800px 0px' });
+    function need(img) {
+      const id = img.dataset.crop; if (!id) return;
+      if (cache.has(id)) { img.src = cache.get(id); return; }
+      if (!want.has(id)) want.set(id, new Set());
+      want.get(id).add(img);
+      if (!timer) timer = setTimeout(flush, 10);
+    }
+    async function flush() {
+      timer = null;
+      while (want.size && inflight < 3) {
+        const ids = [...want.keys()].slice(0, 80);
+        const imgs = ids.map((id) => want.get(id)); ids.forEach((id) => want.delete(id));
+        inflight++;
+        api('people/crops', { ids: ids.join(',') }).then((r) => {
+          ids.forEach((id, i) => {
+            const url = r[id] ? `data:image/jpeg;base64,${r[id]}` : '';
+            if (url) cache.set(id, url);
+            for (const img of imgs[i]) if (url) img.src = url; else img.classList.add('pp-noimg');
+          });
+        }).catch(() => ids.forEach((id, i) => imgs[i].forEach((img) => { img.src = crop(id); }))) // sem lote: um por um
+          .finally(() => { inflight--; if (want.size) flush(); });
+      }
+    }
+    function scan(node) {
+      if (!node.querySelectorAll) return;
+      const list = node.matches && node.matches('img[data-crop]') ? [node] : node.querySelectorAll('img[data-crop]');
+      for (const img of list) { if (img.src) continue; if (cache.has(img.dataset.crop)) img.src = cache.get(img.dataset.crop); else io.observe(img); }
+    }
+    new MutationObserver((muts) => { for (const m of muts) for (const n of m.addedNodes) scan(n); }).observe(document.body, { childList: true, subtree: true });
+    return { scan };
+  })();
+
   function build() {
     root = el('div', 'people hidden');
     root.innerHTML = `
@@ -43,7 +84,7 @@ const People = (() => {
       render();
     });
   }
-  function hide() { open = false; root.classList.add('hidden'); document.body.classList.toggle('lock', P.state === 'max' || Search.open); B.load(B.path, false); }
+  function hide() { clearTimeout(refreshTimer); open = false; root.classList.add('hidden'); document.body.classList.toggle('lock', P.state === 'max' || Search.open); B.load(B.path, false); }
   function close() { if (open) closeLayer('people'); }
 
   // soft: atualiza por trás, mantendo a tela atual (e a rolagem) até a nova versão chegar — sem "carregando"
@@ -61,7 +102,9 @@ const People = (() => {
       if (soft) { const y = root.scrollTop; body.replaceChildren(...into.childNodes); root.scrollTop = y; }
     } catch (e) { if (seq === renderSeq && !soft) body.innerHTML = `<div class="empty">${icon('info')}${esc(e.message)}</div>`; }
   }
-  const refresh = () => render(true);
+  // várias confirmações seguidas viram UMA atualização (o servidor não recalcula a cada clique)
+  let refreshTimer = null;
+  const refresh = () => { clearTimeout(refreshTimer); refreshTimer = setTimeout(() => { if (open) render(true); }, 900); };
 
   // ================================================================ por rosto
   async function renderFaces(body) {
@@ -108,7 +151,7 @@ const People = (() => {
       const list = el('div', 'pp-sugs');
       for (const sgi of sug.slice(0, 200)) {
         const row = el('div', 'pp-sug');
-        row.innerHTML = `<img src="${crop(sgi.face)}" alt="" loading="lazy"><div class="pp-sug-t"><div class="pp-sug-n">${esc(stripExt(sgi.name))}</div><div class="pp-sug-m">${Tags.chip(sgi.tag)} <span>${pct(sgi.sim)} parecido</span>${sgi.conf === 'alta' ? '<span class="pd-conf alta">certeza alta</span>' : ''}${sgi.byName ? '<span class="pd-conf nome">nome no arquivo</span>' : ''}</div></div>`;
+        row.innerHTML = `<img data-crop="${sgi.face}" alt="" loading="lazy"><div class="pp-sug-t"><div class="pp-sug-n">${esc(stripExt(sgi.name))}</div><div class="pp-sug-m">${Tags.chip(sgi.tag)} <span>${pct(sgi.sim)} parecido</span>${sgi.conf === 'alta' ? '<span class="pd-conf alta">certeza alta</span>' : ''}${sgi.byName ? '<span class="pd-conf nome">nome no arquivo</span>' : ''}</div></div>`;
         const ok = el('button', 'icon-btn pp-ok', icon('check')); ok.title = 'Confirmar';
         ok.onclick = () => { row.remove(); apiPost('people/apply', null, { pairs: [{ path: sgi.path, tag: sgi.tag, face: sgi.face }] }).then((r) => Tags.apply(r), (e) => toast(e.message)); };
         const no = el('button', 'icon-btn', icon('close')); no.title = 'Não é esta pessoa';
@@ -130,7 +173,7 @@ const People = (() => {
     const grid = el('div', 'pp-grid');
     for (const c of cl.clusters) {
       const g = el('button', 'pp-group');
-      g.innerHTML = `<div class="pp-faces">${c.sample.slice(0, 4).map((id) => `<img src="${crop(id)}" alt="" loading="lazy">`).join('')}</div><div class="pp-g-n">${c.videos} vídeo${c.videos > 1 ? 's' : ''}</div>`;
+      g.innerHTML = `<div class="pp-faces">${c.sample.slice(0, 4).map((id) => `<img data-crop="${id}" alt="" loading="lazy">`).join('')}</div><div class="pp-g-n">${c.videos} vídeo${c.videos > 1 ? 's' : ''}</div>`;
       g.onclick = () => nameSheet(c, g);
       grid.appendChild(g);
     }
@@ -146,7 +189,7 @@ const People = (() => {
     for (const t of ps) {
       const b = el('button', 'pp-person');
       b.innerHTML = `<span class="pp-avatar" style="--c:${t.color}"></span><span class="pp-p-n">${esc(t.name)}</span><small>${t.count} item(ns)</small>`;
-      api('people/person', { tag: t.name }).then((r) => { if (r.faces[0]) $('.pp-avatar', b).innerHTML = `<img src="${crop(r.faces[0])}" alt="">`; }).catch(() => {});
+      api('people/person', { tag: t.name }).then((r) => { if (r.faces[0]) $('.pp-avatar', b).innerHTML = `<img data-crop="${r.faces[0]}" alt="">`; }).catch(() => {});
       b.onclick = () => personSheet(t);
       pl.appendChild(b);
     }
@@ -161,7 +204,7 @@ const People = (() => {
       Sheet.header(b, 'Quem é?');
       const faces = el('div', 'pp-sheet-faces');
       const ids12 = c.faces.slice(0, 12);
-      faces.innerHTML = ids12.map((id, i) => `<img src="${crop(id)}" alt="" data-i="${i}" class="pp-zoomable" title="Ampliar">`).join('');
+      faces.innerHTML = ids12.map((id, i) => `<img data-crop="${id}" alt="" data-i="${i}" class="pp-zoomable" title="Ampliar">`).join('');
       faces.onclick = (ev) => { const im = ev.target.closest('img'); if (im) zoom(ids12, +im.dataset.i); };
       b.appendChild(faces);
       b.appendChild(el('div', 'sheet-note', `${c.count} rosto(s) em ${c.videos} vídeo(s). Ao salvar, a tag da pessoa é aplicada nesses vídeos e os rostos viram referência para reconhecer a pessoa nos outros vídeos.`));
@@ -206,7 +249,7 @@ const People = (() => {
       };
       for (const o of q.options) {
         const b = el('button', 'pp-q-opt');
-        b.innerHTML = `<div class="pp-faces">${o.faces.map((id) => `<img src="${crop(id)}" alt="" loading="lazy">`).join('')}</div><span>${q.kind === 'isperson' ? `Sim, é ${esc(q.tag)}` : 'É esta pessoa'}</span>${o.seen ? `<small>aparece em ${o.seen} outro(s) vídeo(s) com a tag</small>` : ''}`;
+        b.innerHTML = `<div class="pp-faces">${o.faces.map((id) => `<img data-crop="${id}" alt="" loading="lazy">`).join('')}</div><span>${q.kind === 'isperson' ? `Sim, é ${esc(q.tag)}` : 'É esta pessoa'}</span>${o.seen ? `<small>aparece em ${o.seen} outro(s) vídeo(s) com a tag</small>` : ''}`;
         b.onclick = () => send({ faces: o.all }, `Aprendido: ${q.tag}`);
         const zb = el('span', 'pp-zoom', icon('search')); zb.title = 'Ampliar / conferir no vídeo';
         zb.onclick = (ev) => { ev.stopPropagation(); zoom(o.all.slice(0, 20), 0, q.kind === 'isperson' ? null : { label: 'É esta pessoa', run: () => send({ faces: o.all }, `Aprendido: ${q.tag}`) }); };
@@ -318,7 +361,7 @@ const People = (() => {
       for (const id of r.faces) {
         const auto = (r.auto || []).includes(id);
         const bad = (r.bad || []).includes(id);
-        const im = el('button', 'pp-ref' + (auto ? ' auto' : '') + (bad ? ' bad' : ''), `<img src="${crop(id)}" alt=""><span>${icon('close')}</span>${bad ? '<em class="sus">suspeito</em>' : auto ? '<em>auto</em>' : ''}`);
+        const im = el('button', 'pp-ref' + (auto ? ' auto' : '') + (bad ? ' bad' : ''), `<img data-crop="${id}" alt=""><span>${icon('close')}</span>${bad ? '<em class="sus">suspeito</em>' : auto ? '<em>auto</em>' : ''}`);
         if (bad) im.title = 'Destoa dos outros rostos desta pessoa — provavelmente é outra pessoa. Já não é usado para reconhecer.';
         if (auto) im.title = 'Aprendido sozinho pelas tags dos vídeos';
         const i = r.faces.indexOf(id);
@@ -710,10 +753,10 @@ const People = (() => {
     const card = el('div', 'pp-q pd-same');
     const p = Tags.list.find((t) => t.name === q.tag);
     card.innerHTML = `<div class="pp-q-h">Este grupo é ${Tags.chip(q.tag)}?</div>
-      <div class="pd-same-row"><div class="pp-faces pd-mosaic">${q.sample.slice(0, 4).map((id) => `<img src="${crop(id)}" alt="" loading="lazy">`).join('')}</div>
+      <div class="pd-same-row"><div class="pp-faces pd-mosaic">${q.sample.slice(0, 4).map((id) => `<img data-crop="${id}" alt="" loading="lazy">`).join('')}</div>
       <span class="pd-vs">?</span><div class="pd-same-p"><span class="pp-avatar pd-av" style="--c:${p ? p.color : '#888'}"></span><b>${esc(q.tag)}</b></div></div>
       <div class="pp-note">${q.videos} vídeo(s) · ${pct(q.sim)} parecido — na dúvida, não marquei sozinho</div>`;
-    api('people/person', { tag: q.tag }).then((r) => { if (r.faces[0]) $('.pd-av', card).innerHTML = `<img src="${crop(r.faces[0])}" alt="">`; }).catch(() => {});
+    api('people/person', { tag: q.tag }).then((r) => { if (r.faces[0]) $('.pd-av', card).innerHTML = `<img data-crop="${r.faces[0]}" alt="">`; }).catch(() => {});
     $('.pd-mosaic', card).onclick = () => zoom(q.faces.slice(0, 30), 0);
     $('.pd-mosaic', card).title = 'Ampliar';
     const acts = el('div', 'pp-actions');
@@ -740,7 +783,7 @@ const People = (() => {
   const isDesk = () => deskMQ.matches;
   deskMQ.addEventListener('change', () => { if (open && tab === 'faces') render(); });
   let deskView = 'review'; let deskData = null; let personQ = ''; let showSingles = false; let personTab = 'sugs';
-  const deskSel = new Set(); let lastClicked = null;
+  const deskSel = new Set(); let lastClicked = null; const expanded = new Set();
 
   async function renderDesk(body) {
     const qd = await api('people/questions').catch(() => ({ questions: [], same: [], learned: 0, auto: 0, total: 0 }));
@@ -799,7 +842,7 @@ const People = (() => {
       const k = Tags.key(personQ);
       for (const p of persons.filter((x) => !k || Tags.key(x.tag).includes(k))) {
         const b = el('button', 'pd-p' + (deskView.person === p.tag ? ' on' : ''));
-        b.innerHTML = `<span class="pp-avatar pd-pav" style="--c:${p.color}">${p.face ? `<img src="${crop(p.face)}" alt="" loading="lazy">` : ''}</span><span class="pd-pn">${esc(p.tag)}</span>`
+        b.innerHTML = `<span class="pp-avatar pd-pav" style="--c:${p.color}">${p.face ? `<img data-crop="${p.face}" alt="" loading="lazy">` : ''}</span><span class="pd-pn">${esc(p.tag)}</span>`
           + `${p.sugg ? `<b class="pd-badge" title="sugestões para revisar">${p.sugg}</b>` : ''}<small>${p.count}</small>`;
         b.onclick = () => { personTab = p.sugg ? 'sugs' : 'refs'; setView({ person: p.tag }); };
         // soltar um grupo de rostos aqui = é esta pessoa
@@ -865,7 +908,7 @@ const People = (() => {
         const p = deskData.persons.find((x) => x.tag === tag);
         const hi = items.filter((x) => x.conf === 'alta');
         const h = el('div', 'pd-gh');
-        h.innerHTML = `<button class="pd-gh-p"><span class="pp-avatar pd-pav" style="--c:${p ? p.color : '#888'}">${p && p.face ? `<img src="${crop(p.face)}" alt="">` : ''}</span><b>${esc(tag)}</b></button><small>${items.length} vídeo(s)</small>`;
+        h.innerHTML = `<button class="pd-gh-p"><span class="pp-avatar pd-pav" style="--c:${p ? p.color : '#888'}">${p && p.face ? `<img data-crop="${p.face}" alt="">` : ''}</span><b>${esc(tag)}</b></button><small>${items.length} vídeo(s)</small>`;
         $('.pd-gh-p', h).onclick = () => { personTab = 'sugs'; setView({ person: tag }); };
         if (hi.length) { const b = el('button', 'btn', `${icon('check')}Confirmar as de certeza alta (${hi.length})`); b.onclick = () => confirmItems(hi); h.appendChild(b); }
         const all = el('button', 'btn', `Selecionar as ${items.length}`); all.onclick = () => { items.forEach((x) => deskSel.add(sKey(x))); syncSel(); };
@@ -873,15 +916,22 @@ const People = (() => {
         box.appendChild(h);
       }
       const grid = el('div', 'pd-grid');
-      for (const x of items) grid.appendChild(sugTile(x));
+      // listas enormes: mostra os primeiros 120 (os mais parecidos) e o resto sob demanda
+      const lim = expanded.has(tag) ? items.length : 120;
+      for (const x of items.slice(0, lim)) grid.appendChild(sugTile(x));
       box.appendChild(grid);
+      if (items.length > lim) {
+        const more = el('button', 'btn pd-more', `Mostrar mais ${items.length - lim}`);
+        more.onclick = () => { expanded.add(tag); more.remove(); for (const x of items.slice(lim)) grid.appendChild(sugTile(x)); };
+        box.appendChild(more);
+      }
     }
     return box;
   }
   function sugTile(x) {
     const t = el('div', 'pd-tile' + (deskSel.has(sKey(x)) ? ' sel' : ''));
     t.tabIndex = 0; t._item = x; t.dataset.key = sKey(x);
-    t.innerHTML = `<div class="pd-img"><img src="${crop(x.face)}" alt="" loading="lazy"><span class="pd-chk">${icon('check')}</span>
+    t.innerHTML = `<div class="pd-img"><img data-crop="${x.face}" alt="" loading="lazy"><span class="pd-chk">${icon('check')}</span>
         <div class="pd-acts"><button data-a="ok" title="É ${esc(x.tag)} (Y)">${icon('check')}</button><button data-a="no" title="Não é (N)">${icon('close')}</button><button data-a="zoom" title="Ampliar (Z)">${icon('search')}</button><button data-a="play" title="Ver no vídeo (P)">${icon('play')}</button></div></div>
       <div class="pd-tn" title="${esc(x.name)}">${esc(stripExt(x.name))}</div>
       <div class="pd-tm">${deskView === 'review' ? `${esc(x.tag)} · ` : ''}${pct(x.sim)}${x.conf === 'alta' ? ' <span class="pd-conf alta">alta</span>' : ''}${x.byName ? ' <span class="pd-conf nome" title="o nome da pessoa está no nome do arquivo">nome</span>' : ''}</div>`;
@@ -1024,7 +1074,7 @@ const People = (() => {
     for (const c of list) {
       const t = el('div', 'pd-cl' + (deskSel.has(`c:${c.id}`) ? ' sel' : ''));
       t.tabIndex = 0; t.dataset.key = `c:${c.id}`; t._cluster = c; t.draggable = true;
-      t.innerHTML = `<div class="pp-faces">${c.sample.slice(0, 4).map((id) => `<img src="${crop(id)}" alt="" loading="lazy" draggable="false">`).join('')}</div>
+      t.innerHTML = `<div class="pp-faces">${c.sample.slice(0, 4).map((id) => `<img data-crop="${id}" alt="" loading="lazy" draggable="false">`).join('')}</div>
         <span class="pd-chk">${icon('check')}</span><button class="pd-zoom" title="Ampliar">${icon('search')}</button>
         <div class="pd-tn">${c.videos} vídeo${c.videos > 1 ? 's' : ''}</div><div class="pd-tm">${c.count} rosto(s)${c.q != null && c.q < 0.45 ? ' · <span title="rostos de baixa qualidade (borrados, pequenos ou de lado)">qualidade baixa</span>' : ''}</div>`;
       $('.pd-zoom', t).onclick = (ev) => { ev.stopPropagation(); zoom(c.faces.slice(0, 40), 0); };
@@ -1055,7 +1105,7 @@ const People = (() => {
     const t = Tags.list.find((x) => x.name === tag) || { name: tag, color: '#888', aliases: [] };
     const r = await api('people/person', { tag });
     const head = el('div', 'pd-person-h');
-    head.innerHTML = `<span class="pp-avatar pd-big" style="--c:${t.color}">${p.face ? `<img src="${crop(p.face)}" alt="">` : ''}</span>
+    head.innerHTML = `<span class="pp-avatar pd-big" style="--c:${t.color}">${p.face ? `<img data-crop="${p.face}" alt="">` : ''}</span>
       <div class="pd-ph-t"><h1>${esc(tag)}</h1><div class="pp-sub">${p.count} vídeo(s) com a tag · ${r.faces.length} rosto(s) de referência${r.neg ? ` · ${r.neg} “não é”` : ''}${(t.aliases || []).length ? ` · também: ${esc(t.aliases.join(', '))}` : ''}${p.thr && p.thr > 0.43 ? ` · exigência aumentada (pessoa parecida com outras)` : ''}</div></div>`;
     const acts = el('div', 'pd-ph-a');
     const b1 = el('button', 'btn', `${icon('tag')}Ver vídeos`); b1.onclick = () => { close(); whenHistoryIdle(() => Tags.openView(tag)); };
@@ -1094,7 +1144,7 @@ const People = (() => {
         const bad = (r.bad || []).includes(id); const auto = (r.auto || []).includes(id);
         const tile = el('div', 'pd-tile pd-ref' + (bad ? ' bad' : '') + (deskSel.has(`r:${id}`) ? ' sel' : ''));
         tile.tabIndex = 0; tile.dataset.key = `r:${id}`;
-        tile.innerHTML = `<div class="pd-img"><img src="${crop(id)}" alt="" loading="lazy"><span class="pd-chk">${icon('check')}</span>
+        tile.innerHTML = `<div class="pd-img"><img data-crop="${id}" alt="" loading="lazy"><span class="pd-chk">${icon('check')}</span>
           <div class="pd-acts"><button data-a="zoom" title="Ampliar">${icon('search')}</button><button data-a="play" title="Ver no vídeo">${icon('play')}</button></div></div>
           <div class="pd-tm">${bad ? '<span class="pd-conf sus">suspeito</span>' : auto ? '<span class="pd-conf">auto</span>' : '<span class="pd-conf ok">confirmado</span>'}</div>`;
         tile.addEventListener('click', (ev) => {
