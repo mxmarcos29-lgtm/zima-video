@@ -66,8 +66,9 @@ const Compress = (() => {
               ? `<div class="cz-big">${est.todo} vídeo(s): ${fmtSize(est.size)} → ~${fmtSize(est.est)}</div>
                  <div class="cz-save">economia estimada ~${fmtSize(save)} (${Math.round(save * 100 / Math.max(1, est.size))}%)</div>
                  ${est.skipped ? `<div class="pp-note">${est.skipped} já estão compactos (ou em formato mais eficiente) e serão pulados.</div>` : ''}
+                 ${est.excluded ? `<div class="pp-note">${est.excluded} vídeo(s) em pastas excluídas da compressão ficam de fora.</div>` : ''}
                  <div class="pp-note">A estimativa é aproximada: depende do conteúdo. Se um vídeo não ficar menor, o original é mantido.</div>`
-              : `<div class="pp-note">${est.count ? 'Todos os vídeos escolhidos já estão compactos — nada a comprimir com este formato.' : 'Nenhum vídeo encontrado.'}</div>`;
+              : `<div class="pp-note">${est.count ? 'Todos os vídeos escolhidos já estão compactos — nada a comprimir com este formato.' : est.excluded ? `Os ${est.excluded} vídeo(s) escolhidos estão em pastas excluídas da compressão.` : 'Nenhum vídeo encontrado.'}</div>`;
             const list = el('div', 'cz-list');
             for (const x of est.items.slice(0, 60)) {
               list.appendChild(el('div', 'cz-li' + (x.skip ? ' skip' : ''), `<span>${esc(stripExt(x.name))}</span><small>${x.skip ? esc(x.skip) : `${fmtSize(x.size)} → ~${fmtSize(x.est)}`}${x.codec ? ` · ${esc(x.codec)} ${x.height || ''}p` : ''}</small>`));
@@ -113,6 +114,7 @@ const Compress = (() => {
           else if (i.status === 'done') info = `${fmtSize(i.origSize)} → ${fmtSize(i.newSize)} (−${Math.round((1 - i.newSize / i.origSize) * 100)}%)${i.vmaf ? ` · VMAF ${i.vmaf}` : ''}${i.enc ? ` · ${esc(i.enc)}` : ''}`;
           else if (i.status === 'skipped') info = esc(i.note || 'não ficou menor');
           else if (i.status === 'failed') info = esc(i.error || '');
+          else if (i.status === 'cancelled' && i.note) info = esc(i.note);
           else info = `${fmtSize(i.origSize)} → ~${fmtSize(i.est)} · ${i.where === 'pc' ? 'no PC' : i.where === 'nas' ? 'no NAS' : 'PC ou NAS'}`;
           row.innerHTML = `<div class="cz-qn"><span>${esc(stripExt(i.name))}</span><b>${label[i.status] || i.status}</b></div><div class="cz-qm">${esc(fmt)} · ${info}</div>${i.status === 'working' ? `<div class="pp-progress"><div style="width:${i.pct || 0}%"></div></div>` : ''}`;
           if (['queued', 'working'].includes(i.status)) {
@@ -128,6 +130,7 @@ const Compress = (() => {
       Sheet.open((b) => {
         Sheet.header(b, 'Compressor');
         Sheet.row(b, { ico: 'add', label: 'Comprimir os vídeos desta pasta…', onClick: () => open([B.path]) });
+        Sheet.row(b, { ico: 'folder', label: 'Pastas excluídas da compressão…', chevron: true, onClick: () => { clearInterval(timer); timer = null; People.excludedSheet('compress'); } });
         body = el('div', 'cz-status'); b.appendChild(body);
         body.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
         draw();

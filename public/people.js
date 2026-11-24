@@ -563,33 +563,37 @@ const People = (() => {
       row: ['Não analisar rostos nesta pasta', 'Voltar a analisar rostos nesta pasta', 'Sem análise de rosto (pasta acima excluída)'],
       pick: 'Excluir esta pasta da análise de rosto',
       note: 'Os vídeos destas pastas (e das subpastas) não são enviados ao ajudante, e os rostos já encontrados nelas deixam de aparecer nos grupos e nas sugestões.' },
+    compress: { title: 'Pastas fora da compressão', off: 'não será mais comprimida', on: 'volta a poder ser comprimida',
+      row: ['Não comprimir os vídeos desta pasta', 'Voltar a permitir comprimir esta pasta', 'Sem compressão (pasta acima excluída)'],
+      pick: 'Excluir esta pasta da compressão',
+      note: 'O compressor nunca mexe nos vídeos destas pastas (e das subpastas), mesmo que você peça para comprimir uma pasta acima. O que estava na fila sai dela.' },
     names: { title: 'Pastas fora da busca por nome', off: 'não entra mais na busca pelo nome do arquivo', on: 'volta para a busca pelo nome do arquivo',
       row: ['Não procurar nomes de pessoas nesta pasta', 'Voltar a procurar nomes nesta pasta', 'Sem busca por nome (pasta acima excluída)'],
       pick: 'Excluir esta pasta da busca por nome',
       note: 'Os arquivos destas pastas (e das subpastas) não são considerados ao procurar nomes de pessoas no nome do arquivo.' },
   };
-  const excl = { faces: null, names: null };
+  const excl = { faces: null, names: null, compress: null };
   async function loadExcluded() {
-    try { const r = await api('people/exclude'); excl.faces = r.excluded; excl.names = r.names || []; } catch { excl.faces = []; excl.names = []; }
+    try { const r = await api('people/exclude'); excl.faces = r.excluded; excl.names = r.names || []; excl.compress = r.compress || []; } catch { excl.faces = []; excl.names = []; excl.compress = []; }
     return excl;
   }
   const isExcluded = (p, kind = 'faces') => (excl[kind] || []).some((x) => p === x || p.startsWith(x + '/'));
   async function setExcluded(p, on, kind = 'faces') {
     try {
       const r = await apiPost('people/exclude', null, { path: p, on, kind });
-      excl.faces = r.excluded; excl.names = r.names || [];
-      toast(`“${basename(p) || 'Início'}” ${on ? KINDS[kind].off : KINDS[kind].on}`);
+      excl.faces = r.excluded; excl.names = r.names || []; excl.compress = r.compress || [];
+      toast(`“${basename(p) || 'Início'}” ${on ? KINDS[kind].off : KINDS[kind].on}${r.cancelled ? ` · ${r.cancelled} vídeo(s) saíram da fila` : ''}`);
       if (open) render();
     } catch (e) { toast(e.message); }
   }
   // linhas no menu ⋮ de uma pasta (modo administrador)
   function folderRow(b, e) {
     if (excl.faces === null) loadExcluded();
-    for (const kind of ['faces', 'names']) {
+    for (const kind of ['faces', 'names', 'compress']) {
       const on = isExcluded(e.path, kind);
       const parentEx = on && !excl[kind].includes(e.path);
       const k = KINDS[kind];
-      Sheet.row(b, { ico: kind === 'faces' ? 'person' : 'search', label: parentEx ? k.row[2] : on ? k.row[1] : k.row[0],
+      Sheet.row(b, { ico: kind === 'faces' ? 'person' : kind === 'compress' ? 'compress' : 'search', label: parentEx ? k.row[2] : on ? k.row[1] : k.row[0],
         onClick: () => { Sheet.close(); if (parentEx) whenHistoryIdle(() => excludedSheet(kind)); else setExcluded(e.path, !on, kind); } });
     }
   }
@@ -1171,5 +1175,5 @@ const People = (() => {
     }
   }
 
-  return { show, close, folderRow, loadExcluded, get open() { return open; } };
+  return { show, close, folderRow, loadExcluded, excludedSheet, isExcluded: (p, kind) => isExcluded(p, kind), get open() { return open; } };
 })();

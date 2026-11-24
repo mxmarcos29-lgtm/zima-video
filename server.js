@@ -1494,7 +1494,7 @@ fs.mkdirSync(path.join(PEOPLE_DIR, 'c'), { recursive: true });
 
 const faceVideos = new Map(); // path -> { key, at, frames, faces: [{ id, t, score, n, emb: Float32Array }] }
 const faceById = new Map();   // id -> { path, face }
-let peopleDb = { refs: {}, ignored: {}, excluded: [], auto: {}, neg: {}, answered: {}, blocked: {}, notPerson: {}, nameExcluded: [], nameIgnored: {}, nameRejected: {} };
+let peopleDb = { refs: {}, ignored: {}, excluded: [], auto: {}, neg: {}, answered: {}, blocked: {}, notPerson: {}, nameExcluded: [], nameIgnored: {}, nameRejected: {}, compressExcluded: [] };
 // nameExcluded: pastas fora da busca pelo nome do arquivo; nameIgnored: chave do nome -> nome ("não é nome de pessoa");
 // nameRejected: 'caminho|tag' -> 1 (o nome no arquivo não é esta pessoa)
 // auto: faceId -> tag (aprendido sozinho pelas tags); answered: 'path|tag' -> resposta do usuário;
@@ -1502,6 +1502,8 @@ let peopleDb = { refs: {}, ignored: {}, excluded: [], auto: {}, neg: {}, answere
 // pasta (ou algo dentro dela) excluída da análise de rosto?
 const faceExcluded = (rel) => peopleDb.excluded.some((x) => rel === x || rel.startsWith(x + '/'));
 const nameExcluded = (rel) => peopleDb.nameExcluded.some((x) => rel === x || rel.startsWith(x + '/'));
+// compressExcluded: pastas que o compressor nunca mexe
+const compressExcluded = (rel) => peopleDb.compressExcluded.some((x) => rel === x || rel.startsWith(x + '/'));
 let clusterCache = null;   // grupos sem nome como a tela mostra (derivados da base; baratos de refazer)
 let clusterBase = null;    // agrupamento completo (caro): refeito quando chegam rostos novos ou por trás, com o app parado
 let clusterRebuildTimer = null;
@@ -1536,7 +1538,7 @@ function indexFaces(rel, rec) {
       }
     }
   } catch { /* sem dados */ }
-  try { const j = JSON.parse(fs.readFileSync(PEOPLE_FILE, 'utf8')); peopleDb = { refs: j.refs || {}, ignored: j.ignored || {}, excluded: j.excluded || [], auto: j.auto || {}, neg: j.neg || {}, answered: j.answered || {}, blocked: j.blocked || {}, notPerson: j.notPerson || {}, nameExcluded: j.nameExcluded || [], nameIgnored: j.nameIgnored || {}, nameRejected: j.nameRejected || {} }; } catch { /* vazio */ }
+  try { const j = JSON.parse(fs.readFileSync(PEOPLE_FILE, 'utf8')); peopleDb = { refs: j.refs || {}, ignored: j.ignored || {}, excluded: j.excluded || [], auto: j.auto || {}, neg: j.neg || {}, answered: j.answered || {}, blocked: j.blocked || {}, notPerson: j.notPerson || {}, nameExcluded: j.nameExcluded || [], nameIgnored: j.nameIgnored || {}, nameRejected: j.nameRejected || {}, compressExcluded: j.compressExcluded || [] }; } catch { /* vazio */ }
 })();
 async function saveFaceVideo(rel, rec) {
   const file = videoFile(rel);
@@ -1576,7 +1578,7 @@ async function peopleTagRenamed(from, to) {
 async function peopleRelocate(pairs, removed = []) {
   const map = (p) => { for (const [a, b] of pairs) { if (p === a) return b; if (p.startsWith(a + '/')) return b + p.slice(a.length); } return null; };
   let moved = false;
-  for (const k of ['excluded', 'nameExcluded']) {
+  for (const k of ['excluded', 'nameExcluded', 'compressExcluded']) {
     const ex = peopleDb[k].map((x) => map(x) ?? x).filter((x) => !removed.some((a) => x === a || x.startsWith(a + '/')));
     if (ex.join('\n') !== peopleDb[k].join('\n')) { peopleDb[k] = ex; moved = true; }
   }
@@ -1889,22 +1891,26 @@ async function compressAdd({ paths = [], preset = 'h265', maxh = 0, where = 'aut
   return { ok: true, added: n };
 }
 // pastas viram a lista dos vídeos dentro delas (e das subpastas)
-async function expandVideos(paths) {
-  const out = new Set(); const idx = await getIndex();
+async function expandVideos(paths, stats = {}) {
+  const out = new Set(); const idx = await getIndex(); const skipped = new Set();
+  const take = (p) => { if (compressExcluded(p)) skipped.add(p); else out.add(p); };
   for (const p of paths) {
     const rel = relOf(resolveSafe(p)); const st = await statSafe(path.join(ROOT, rel));
     if (!st) continue;
-    if (st.isDirectory()) { for (const it of idx) if (it.t === 'video' && (rel === '' || it.p.startsWith(rel + '/')) && !inCacheRel(it.p)) out.add(it.p); }
-    else if (typeOf(rel) === 'video') out.add(rel);
+    if (st.isDirectory()) { for (const it of idx) if (it.t === 'video' && (rel === '' || it.p.startsWith(rel + '/')) && !inCacheRel(it.p)) take(it.p); }
+    else if (typeOf(rel) === 'video') take(rel);
   }
+  stats.excluded = skipped.size; // vídeos em pastas excluídas da compressão (ficam de fora)
   return [...out].slice(0, 5000);
 }
 async function compressEstimate({ paths = [], preset = 'h265', maxh = 0, quality = 'alta' }) {
-  const list = (await expandVideos(paths)).slice(0, 2000);
+  const stats = {};
+  const list = (await expandVideos(paths, stats)).slice(0, 2000);
   const items = [];
   for (const rel of list) { const pl = await compressPlan(rel, preset, +maxh || 0, quality); if (pl) items.push(pl); }
   const go = items.filter((x) => !x.skip);
-  return { items: items.slice(0, 500), count: items.length, todo: go.length, size: go.reduce((a, x) => a + x.size, 0), est: go.reduce((a, x) => a + x.est, 0), skipped: items.length - go.length };
+  return { items: items.slice(0, 500), count: items.length, todo: go.length, size: go.reduce((a, x) => a + x.size, 0), est: go.reduce((a, x) => a + x.est, 0), skipped: items.length - go.length,
+    excluded: stats.excluded || 0 };
 }
 async function compressStatus() {
   const db = await loadCompress();
@@ -1925,7 +1931,7 @@ async function compressTick() {
   const db = await loadCompress();
   const pcOn = Date.now() - lastCompressWorker < 3 * 60000;
   const canNas = (i) => i.preset !== 'av1' || nasEncoders.has('libsvtav1');
-  const it = db.items.find((i) => i.status === 'queued' && canNas(i) && (i.where === 'nas' || (i.where === 'auto' && !pcOn)));
+  const it = db.items.find((i) => i.status === 'queued' && canNas(i) && !compressExcluded(i.path) && (i.where === 'nas' || (i.where === 'auto' && !pcOn)));
   if (!it) return;
   const abs = resolveSafe(it.path);
   let info; try { info = await probe(abs); } catch (e) { it.status = 'failed'; it.error = 'não consegui ler o vídeo'; return saveCompress(); }
@@ -1959,7 +1965,7 @@ async function compressJobForWorker(t) {
   const db = await loadCompress(); const now = Date.now();
   // trabalho que ficou parado (ajudante fechado no meio) volta para a fila
   for (const i of db.items) if (i.status === 'working' && i.by !== 'NAS' && now - (i.beat || 0) > 10 * 60000) { i.status = 'queued'; i.pct = 0; }
-  const it = db.items.find((i) => i.status === 'queued' && (i.where === 'pc' || i.where === 'auto'));
+  const it = db.items.find((i) => i.status === 'queued' && !compressExcluded(i.path) && (i.where === 'pc' || i.where === 'auto'));
   if (!it) return { none: true };
   const abs = resolveSafe(it.path);
   let info; try { info = await probe(abs); } catch { it.status = 'failed'; it.error = 'não consegui ler o vídeo'; saveCompress(); return { none: true }; }
@@ -2980,9 +2986,9 @@ const server = http.createServer(async (req, res) => {
       case '/api/people/exclude': {
         // GET: listas; POST { path, on, kind }: tira (on=true) ou devolve (on=false) uma pasta da análise
         // de rosto (kind 'faces') ou da busca pelo nome do arquivo (kind 'names')
-        if (req.method === 'GET') { await requireAdminGet(req); return sendJSON(res, { excluded: peopleDb.excluded, names: peopleDb.nameExcluded }); }
+        if (req.method === 'GET') { await requireAdminGet(req); return sendJSON(res, { excluded: peopleDb.excluded, names: peopleDb.nameExcluded, compress: peopleDb.compressExcluded }); }
         await requireAdmin(req); const b = await readBody(req);
-        const list = b.kind === 'names' ? 'nameExcluded' : 'excluded';
+        const list = b.kind === 'names' ? 'nameExcluded' : b.kind === 'compress' ? 'compressExcluded' : 'excluded';
         const r = relOf(resolveSafe(b.path || ''));
         const st = await statSafe(path.join(ROOT, r));
         if (b.on && (!r || !st || !st.isDirectory())) throw new HttpError(400, r ? 'Pasta não encontrada' : 'Escolha uma pasta');
@@ -2990,7 +2996,14 @@ const server = http.createServer(async (req, res) => {
         if (b.on) set.add(r); else set.delete(r);
         peopleDb[list] = [...set].sort(ptSort);
         await savePeople();
-        return sendJSON(res, { ok: true, excluded: peopleDb.excluded, names: peopleDb.nameExcluded });
+        let cancelled = 0;
+        if (list === 'compressExcluded' && b.on) {
+          // o que ainda estava na fila dessa pasta sai da fila
+          const db = await loadCompress();
+          for (const i of db.items) if (i.status === 'queued' && compressExcluded(i.path)) { i.status = 'cancelled'; i.note = 'pasta excluída da compressão'; cancelled++; }
+          if (cancelled) await saveCompress(true);
+        }
+        return sendJSON(res, { ok: true, excluded: peopleDb.excluded, names: peopleDb.nameExcluded, compress: peopleDb.compressExcluded, cancelled });
       }
       case '/api/people/name-ignore': {
         // GET: nomes marcados como "não é nome de pessoa"; POST { names: [...], on }: marca/desmarca
@@ -3064,7 +3077,7 @@ const server = http.createServer(async (req, res) => {
             if (compressLocal && compressLocal.it === i) compressLocal.proc.kill('SIGKILL');
           }
         } else if (act === 'retry') {
-          for (const i of db.items) if ((b.ids || []).includes(i.id) && ['failed', 'cancelled'].includes(i.status)) { i.status = 'queued'; i.pct = 0; i.error = null; }
+          for (const i of db.items) if ((b.ids || []).includes(i.id) && ['failed', 'cancelled'].includes(i.status) && !compressExcluded(i.path)) { i.status = 'queued'; i.pct = 0; i.error = null; i.note = null; }
           setTimeout(compressTick, 500);
         } else if (act === 'clear') db.items = db.items.filter((i) => ['queued', 'working'].includes(i.status));
         await saveCompress(true);
