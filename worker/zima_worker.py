@@ -529,6 +529,7 @@ class Helper:
                     self.failed += 1
                     msg = readable_error(e)
                     self.say(f'✗ {os.path.basename(job["path"])}: {msg}')
+                    self.emit('failed', {'path': job['path'], 'error': msg})
                     try: api(self.cfg, 'POST', '/api/worker/result', json={'path': job['path'], 'key': job['key'], 'faces': [], 'error': msg[:300]})
                     except Exception: pass
                 self.current = None

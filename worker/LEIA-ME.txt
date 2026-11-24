@@ -52,6 +52,16 @@ COMPRESSAO DE VIDEOS
    os arquivos ficam um pouco maiores que pelo processador).
  - Usa espaco temporario no PC (pasta TEMP) durante a compressao de cada video.
 
+JANELA
+ - Rostos e Compressao: o que esta sendo feito agora, com barra de progresso. Na compressao aparecem tambem
+   a velocidade (ex.: 3x = 3 vezes mais rapido que o video) e quanto tempo falta.
+ - Uso do sistema: processador, memoria, placa de video (com a parte do ajudante e o uso por funcao:
+   Analise/Compute, Codificacao e Decodificacao de video) e memoria da placa — os mesmos numeros do
+   Gerenciador de Tarefas.
+ - Abas: "Uso do PC" (configuracoes), "Atividade" (registro) e "Historico" (tudo o que foi analisado e
+   comprimido neste PC, com tamanhos antes/depois; fica salvo em historico.json). Dois cliques numa
+   linha do historico mostram os detalhes.
+
 DICAS
  - Rede: o ajudante le so alguns trechos de cada video (nao baixa o arquivo inteiro).
  - Sem placa de video compativel ele usa o processador (mais lento).

@@ -4,3 +4,4 @@ worker/models/
 worker/.venv/
 worker/config.json
 worker/__pycache__/
+worker/historico.json

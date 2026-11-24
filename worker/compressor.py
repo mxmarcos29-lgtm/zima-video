@@ -168,6 +168,7 @@ class Compressor:
                 self.failed += 1
                 msg = readable_error(e)
                 self.say(f'✗ Compressão de {job.get("name")}: {msg}')
+                self.emit('cdone', {'name': job.get('name'), 'status': 'failed', 'error': msg, 'before': job.get('size')})
                 try: self._api('POST', '/api/worker/compress-fail', json={'id': job['id'], 'error': msg})
                 except Exception: pass
             finally:
@@ -179,7 +180,8 @@ class Compressor:
         enc = CPU_ENC[codec] if force_cpu else self.pick(codec)
         if not enc:
             raise RuntimeError(f'este PC não tem codificador para {codec.upper()}')
-        self.current = {'name': job['name'], 'pct': 0, 'enc': enc_label(enc), 'stage': 'comprimindo', 'speed': ''}
+        self.current = {'name': job['name'], 'pct': 0, 'enc': enc_label(enc), 'stage': 'comprimindo', 'speed': '', 'eta': None,
+                        'codec': codec, 'size': job.get('size'), 'started': time.time()}
         self.emit('compress', self.current)
         self.say(f'Comprimindo {job["name"]} ({codec.upper()} pela {enc_label(enc)})…')
         tmpdir = os.path.join(tempfile.gettempdir(), 'zima-comprimir'); os.makedirs(tmpdir, exist_ok=True)
@@ -206,7 +208,10 @@ class Compressor:
                 self.current['pct'] = min(99, int(int(m.group(1)) / 1e6 / dur * 100))
             m = re.match(r'speed=\s*([\d.]+)x', line)
             if m:
-                self.current['speed'] = f'{float(m.group(1)):.1f}x'
+                sp = float(m.group(1))
+                self.current['speed'] = f'{sp:.1f}x'
+                if sp > 0:  # tempo que falta = parte do vídeo que falta ÷ velocidade
+                    self.current['eta'] = int(dur * (100 - self.current['pct']) / 100 / sp)
             if time.time() - last_post > 5:
                 last_post = time.time()
                 self.emit('compress', self.current)
@@ -269,6 +274,8 @@ class Compressor:
             raise RuntimeError(f'servidor respondeu {r.status_code}')
         if r.status_code >= 400:
             raise RuntimeError(res.get('error') or f'servidor respondeu {r.status_code}')
+        rec = {'name': job['name'], 'codec': codec, 'enc': enc_label(enc), 'before': job.get('size'), 'after': res.get('newSize'),
+               'secs': int(time.time() - self.current['started']), 'status': res.get('status'), 'error': res.get('error')}
         if res.get('status') == 'done':
             self.done += 1; self.saved += max(0, int(job.get('size') or 0) - int(res.get('newSize') or 0))
             self.say(f'✓ {job["name"]} comprimido: {fmt_size(job.get("size"))} → {fmt_size(res.get("newSize"))}')
@@ -277,6 +284,7 @@ class Compressor:
         else:
             self.failed += 1
             self.say(f'✗ {job["name"]}: {res.get("error")}')
+        self.emit('cdone', rec)
 
     @staticmethod
     def _cleanup(path):

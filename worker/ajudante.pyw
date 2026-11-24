@@ -31,6 +31,8 @@ if sys.stdout is None or sys.stderr is None:
 
 import zima_worker as zw  # noqa: E402
 import compressor as zc  # noqa: E402
+import sysmon  # noqa: E402
+import json  # noqa: E402
 
 IS_WIN = os.name == 'nt'
 APP = 'Zima Video — Ajudante'
@@ -151,6 +153,15 @@ def make_icon(size=64, state='working'):
     return img
 
 
+def fmt_dur(sec):
+    sec = int(sec or 0)
+    if sec < 60:
+        return f'{sec} s'
+    if sec < 3600:
+        return f'{sec // 60} min' + (f' {sec % 60:02d} s' if sec < 600 else '')
+    return f'{sec // 3600} h {sec % 3600 // 60:02d} min'
+
+
 # ---------------------------------------------------------------- janela
 class App:
     def __init__(self, root, start_hidden=False):
@@ -169,8 +180,9 @@ class App:
         self._loading = True   # enquanto monta a janela, mudanças nos campos não são gravadas
 
         root.title(APP)
-        root.minsize(470, 560)
-        root.geometry('520x780')
+        root.minsize(500, 640)
+        root.geometry('560x900')
+        root.resizable(True, True)
         root.protocol('WM_DELETE_WINDOW', self.on_close)
         img = make_icon(64)
         if img is not None:
@@ -181,6 +193,8 @@ class App:
                 pass
         self.build()
         self.load_form()
+        self.load_history()
+        self.root.after(800, self.tick_resources)
         self._loading = False
         self.start_tray()
         if start_hidden and self.tray:
@@ -204,19 +218,47 @@ class App:
             pass
         st.configure('Big.TLabel', font=('Segoe UI', 13, 'bold'))
         st.configure('Muted.TLabel', foreground='#666')
-        main = ttk.Frame(r, padding=14); main.pack(fill='both', expand=True)
+        st.configure('Sec.TLabel', font=('Segoe UI', 10, 'bold'))
+        st.configure('Small.TLabel', foreground='#666', font=('Segoe UI', 8))
+        main = ttk.Frame(r, padding=(14, 10, 14, 10)); main.pack(fill='both', expand=True)
 
-        # situação
+        # situação geral
         top = ttk.Frame(main); top.pack(fill='x')
         self.dot = tk.Canvas(top, width=14, height=14, highlightthickness=0); self.dot.pack(side='left', padx=(0, 8))
         self.dot_id = self.dot.create_oval(2, 2, 12, 12, fill='#999', outline='')
         self.lbl_state = ttk.Label(top, text='Iniciando…', style='Big.TLabel'); self.lbl_state.pack(side='left')
-        self.lbl_file = ttk.Label(main, text='', style='Muted.TLabel'); self.lbl_file.pack(fill='x', pady=(6, 2))
-        self.pb = ttk.Progressbar(main, mode='determinate', maximum=100); self.pb.pack(fill='x')
-        self.lbl_stats = ttk.Label(main, text='', style='Muted.TLabel', justify='left'); self.lbl_stats.pack(fill='x', pady=(6, 0))
 
+        # rostos
+        fr = ttk.LabelFrame(main, text=' Rostos ', padding=(10, 4, 10, 8)); fr.pack(fill='x', pady=(8, 0))
+        self.lbl_file = ttk.Label(fr, text='', style='Muted.TLabel'); self.lbl_file.pack(fill='x')
+        self.pb = ttk.Progressbar(fr, mode='determinate', maximum=100); self.pb.pack(fill='x', pady=(2, 2))
+        self.lbl_stats = ttk.Label(fr, text='', style='Muted.TLabel', justify='left', wraplength=500); self.lbl_stats.pack(fill='x')
+
+        # compressão
+        fc = ttk.LabelFrame(main, text=' Compressão ', padding=(10, 4, 10, 8)); fc.pack(fill='x', pady=(8, 0))
+        self.lbl_cfile = ttk.Label(fc, text='', style='Muted.TLabel', wraplength=500); self.lbl_cfile.pack(fill='x')
+        self.pbc = ttk.Progressbar(fc, mode='determinate', maximum=100); self.pbc.pack(fill='x', pady=(2, 2))
+        self.lbl_cstats = ttk.Label(fc, text='', style='Muted.TLabel', justify='left', wraplength=500); self.lbl_cstats.pack(fill='x')
+
+        # uso do sistema
+        fs = ttk.LabelFrame(main, text=' Uso do sistema ', padding=(10, 4, 10, 8)); fs.pack(fill='x', pady=(8, 0))
+        self.res = {}
+        for i, (k, label) in enumerate((('cpu', 'Processador'), ('mem', 'Memória'), ('gpu', 'Placa de vídeo'), ('vram', 'Memória da placa'))):
+            ttk.Label(fs, text=label).grid(row=i, column=0, sticky='w', pady=1)
+            bar = ttk.Progressbar(fs, mode='determinate', maximum=100, length=150); bar.grid(row=i, column=1, sticky='we', padx=8)
+            txt = ttk.Label(fs, text='—', style='Muted.TLabel'); txt.grid(row=i, column=2, sticky='w')
+            self.res[k] = (bar, txt)
+        fs.columnconfigure(1, weight=1)
+        self.lbl_gpu_eng = ttk.Label(fs, text='', style='Small.TLabel'); self.lbl_gpu_eng.grid(row=4, column=0, columnspan=3, sticky='w', pady=(2, 0))
+
+        # abas: configurações, atividade, histórico
+        nb = ttk.Notebook(main); nb.pack(fill='both', expand=True, pady=(10, 0))
+        self.nb = nb
+        tab_cfg = ttk.Frame(nb, padding=8); tab_log = ttk.Frame(nb, padding=6); tab_hist = ttk.Frame(nb, padding=6)
+        nb.add(tab_cfg, text='Uso do PC'); nb.add(tab_log, text='Atividade'); nb.add(tab_hist, text='Histórico')
+        main = tab_cfg  # as configurações abaixo vão para a primeira aba
         # uso do PC
-        box = ttk.LabelFrame(main, text=' Quanto do PC o ajudante pode usar ', padding=10); box.pack(fill='x', pady=(14, 0))
+        box = ttk.LabelFrame(main, text=' Quanto do PC o ajudante pode usar ', padding=10); box.pack(fill='x')
         self.mode = tk.StringVar()
         mrow = ttk.Frame(box); mrow.pack(fill='x')
         ttk.Radiobutton(mrow, text='Automático (recomendado)', value='auto', variable=self.mode, command=self.on_form).pack(side='left')
@@ -266,10 +308,26 @@ class App:
         ttk.Checkbutton(opts, text='Comprimir os vídeos pedidos no app (nos níveis Médio e Máximo)', variable=self.v_comp, command=self.on_form).pack(anchor='w')
         ttk.Checkbutton(opts, text='Comprimir usando a placa de vídeo (bem mais rápido)', variable=self.v_compgpu, command=self.on_form).pack(anchor='w', padx=(20, 0))
 
-        # registro
-        lf = ttk.LabelFrame(main, text=' Atividade ', padding=6); lf.pack(fill='both', expand=True, pady=(12, 0))
-        self.log = tk.Text(lf, height=7, width=50, wrap='none', font=('Consolas', 9), relief='flat', background='#f6f6f8')
+        # atividade (registro)
+        self.log = tk.Text(tab_log, height=8, width=50, wrap='none', font=('Consolas', 9), relief='flat', background='#f6f6f8')
         self.log.pack(fill='both', expand=True); self.log.configure(state='disabled')
+
+        # histórico (fica salvo entre uma abertura e outra)
+        hh = ttk.Frame(tab_hist); hh.pack(fill='x')
+        ttk.Button(hh, text='Limpar', command=self.clear_history).pack(side='right')
+        self.lbl_hist = ttk.Label(hh, text='', style='Muted.TLabel', justify='left', wraplength=400); self.lbl_hist.pack(side='left', fill='x', expand=True)
+        cols = ('quando', 'tipo', 'video', 'resultado', 'tempo')
+        tv = ttk.Treeview(tab_hist, columns=cols, show='headings', height=8)
+        for c, label, w, anchor in (('quando', 'Quando', 74, 'w'), ('tipo', 'Tipo', 80, 'w'), ('video', 'Vídeo', 130, 'w'),
+                                    ('resultado', 'Resultado', 150, 'w'), ('tempo', 'Tempo', 58, 'e')):
+            tv.heading(c, text=label); tv.column(c, width=w, minwidth=40, anchor=anchor, stretch=(c in ('video', 'resultado')))
+        sb = ttk.Scrollbar(tab_hist, orient='vertical', command=tv.yview); tv.configure(yscrollcommand=sb.set)
+        tv.pack(side='left', fill='both', expand=True, pady=(6, 0)); sb.pack(side='right', fill='y', pady=(6, 0))
+        tv.tag_configure('erro', foreground='#c0392b')
+        self.tv = tv
+        # dois cliques numa linha: mostra tudo (nomes e erros longos ficam cortados na tabela)
+        tv.bind('<Double-1>', lambda e: (lambda it: it and messagebox.showinfo(APP, '\n'.join(f'{h}: {v}' for h, v in zip(
+            ('Quando', 'Tipo', 'Vídeo', 'Resultado', 'Tempo'), tv.item(it, 'values')))))(tv.focus()))
 
     def load_form(self):
         c = self.cfg
@@ -400,6 +458,11 @@ class App:
                 self.speed = data; self.render_state()
         elif kind == 'done':
             self.pb.configure(value=0); self.render_state()
+            self.add_history({'kind': 'faces', 'name': os.path.basename(data.get('path', '')), 'people': data.get('people'), 'ms': data.get('ms'), 'status': 'done'})
+        elif kind == 'failed':
+            self.add_history({'kind': 'faces', 'name': os.path.basename(data.get('path', '')), 'error': data.get('error'), 'status': 'failed'})
+        elif kind == 'cdone':
+            self.add_history(dict(data, kind='compress')); self.render_state()
         elif kind == 'server':
             self.server_progress = data; self.render_state()
         elif kind == 'compress':
@@ -430,8 +493,7 @@ class App:
             self.lbl_file.configure(text='')
         parts = []
         if h:
-            parts.append(f'Nesta sessão: {h.done} vídeo(s)' + (f', {h.failed} com erro' if h.failed else ''))
-            if h.device: parts.append(f'Usando: {h.device}')
+            parts.append(f'Nesta sessão: {h.done} vídeo(s)' + (f', {h.failed} com erro' if h.failed else '') + (f' · usando {h.device}' if h.device else ''))
             sp = getattr(self, 'speed', None)
             if sp and self.state.get('state') == 'working':
                 parts.append(f'Velocidade: {sp["fps"]:.0f} quadros/s · análise ocupando {sp["busy"] * 100:.0f}% do tempo'
@@ -439,18 +501,116 @@ class App:
         if self.server_progress:
             p = self.server_progress
             parts.append(f'Biblioteca: {p.get("done", 0)} de {p.get("total", 0)} vídeos analisados')
-        cp = getattr(self, 'comp', None)
-        if cp:
-            cur = cp.current
-            if cur:
-                parts.append(f'Compressão: {cur["stage"]} “{cur["name"][:40]}” — {cur["pct"]}%'
-                             + (f' · {cur["speed"]}' if cur.get('speed') and cur['stage'] == 'comprimindo' else '') + f' · {cur["enc"]}')
-            if cp.done or cp.failed:
-                parts.append(f'Comprimidos nesta sessão: {cp.done} · economia {zc.fmt_size(cp.saved)}' + (f' · {cp.failed} com erro' if cp.failed else ''))
-            elif not cur and self.cfg.get('compress', True) and self.last_level not in ('medio', 'maximo'):
-                parts.append('Compressão: espera o nível Médio ou Máximo')
         self.lbl_stats.configure(text='\n'.join(parts))
+        self.render_compress()
         self.update_tray()
+
+    def render_compress(self):
+        cp = getattr(self, 'comp', None)
+        if not cp:
+            return
+        cur = cp.current
+        if not self.cfg.get('compress', True):
+            self.lbl_cfile.configure(text='Desligada (marque “Comprimir os vídeos pedidos no app” na aba Uso do PC)')
+            self.pbc.configure(value=0); self.lbl_cstats.configure(text=''); return
+        if cur:
+            stage = {'comprimindo': 'Comprimindo', 'pausada': 'Pausada (você está usando o PC)', 'enviando': 'Enviando para o NAS'}.get(cur['stage'], cur['stage'])
+            self.lbl_cfile.configure(text=f'{stage}: {cur["name"]}')
+            self.pbc.configure(value=cur.get('pct') or 0)
+            bits = [f'{cur.get("pct") or 0}%']
+            if cur['stage'] == 'comprimindo':
+                if cur.get('speed'): bits.append(f'{cur["speed"]} a velocidade normal do vídeo')
+                if cur.get('eta') is not None: bits.append(f'falta ~{fmt_dur(cur["eta"])}')
+            bits.append(f'{(cur.get("codec") or "").upper()} pela {cur["enc"]}')
+            line = ' · '.join(bits)
+        else:
+            self.pbc.configure(value=0)
+            self.lbl_cfile.configure(text='Aguardando vídeos para comprimir' if self.last_level in ('medio', 'maximo') else 'Espera o nível Médio ou Máximo (PC parado, no modo Automático)')
+            line = ''
+        tot = f'Nesta sessão: {cp.done} comprimido(s) · economia {zc.fmt_size(cp.saved)}' + (f' · {cp.failed} com erro' if cp.failed else '')
+        self.lbl_cstats.configure(text='\n'.join(x for x in (line, tot) if x))
+
+    # ---------------- uso do sistema
+    def tick_resources(self):
+        try:
+            if not hasattr(self, 'mon'):
+                self.mon = sysmon.SysMon()
+            r = self.mon.read()
+            def setbar(k, pct, txt):
+                bar, lab = self.res[k]; bar.configure(value=max(0, min(100, pct or 0))); lab.configure(text=txt)
+            if 'cpu' in r:
+                setbar('cpu', r['cpu'], f'{r["cpu"]:.0f}%  (ajudante {r.get("cpu_mine", 0):.0f}%)')
+                setbar('mem', r['mem'], f'{r["mem"]:.0f}%  (ajudante {sysmon.fmt_bytes(r.get("mem_mine"))})')
+            else:
+                setbar('cpu', 0, 'instale o componente psutil'); setbar('mem', 0, '—')
+            g = r.get('gpu')
+            if g:
+                mine = sum(g['mine'].values())
+                setbar('gpu', g['total'], f'{g["total"]:.0f}%  (ajudante {min(100, mine):.0f}%)')
+                eng = [f'{sysmon.ENGINE_NAMES.get(k, k)} {v:.0f}%' for k, v in sorted(g['types'].items(), key=lambda x: -x[1]) if v >= 1 and k in sysmon.ENGINE_NAMES]
+                self.lbl_gpu_eng.configure(text=('Placa por função: ' + ' · '.join(eng[:4])) if eng else 'Placa por função: tudo parado')
+                if g.get('mem') is not None:
+                    setbar('vram', 0, sysmon.fmt_bytes(g['mem']) + ' em uso')
+                    self.res['vram'][0].configure(mode='indeterminate'); self.res['vram'][0].stop()
+            else:
+                setbar('gpu', 0, 'disponível só no Windows' if not sysmon.IS_WIN else 'sem contadores da placa neste Windows')
+                setbar('vram', 0, '—'); self.lbl_gpu_eng.configure(text='')
+        except Exception as e:
+            self.lbl_gpu_eng.configure(text=f'Uso do sistema indisponível: {e}')
+        self.root.after(2000, self.tick_resources)
+
+    # ---------------- histórico
+    HIST_FILE = os.path.join(HERE, 'historico.json')
+
+    def load_history(self):
+        try:
+            with open(self.HIST_FILE, encoding='utf-8') as f:
+                self.history = json.load(f)
+        except Exception:
+            self.history = []
+        self.draw_history()
+
+    def add_history(self, rec):
+        rec['at'] = time.time()
+        self.history.append(rec); self.history = self.history[-1500:]
+        try:
+            with open(self.HIST_FILE + '.tmp', 'w', encoding='utf-8') as f:
+                json.dump(self.history, f, ensure_ascii=False)
+            os.replace(self.HIST_FILE + '.tmp', self.HIST_FILE)
+        except Exception:
+            pass
+        self.draw_history()
+
+    def clear_history(self):
+        if messagebox.askyesno(APP, 'Apagar o histórico deste PC?'):
+            self.history = []
+            try: os.remove(self.HIST_FILE)
+            except Exception: pass
+            self.draw_history()
+
+    def draw_history(self):
+        tv = self.tv
+        tv.delete(*tv.get_children())
+        for h in reversed(self.history[-400:]):
+            when = time.strftime('%d/%m %H:%M', time.localtime(h.get('at', 0)))
+            if h.get('kind') == 'faces':
+                res = h['error'] if h.get('status') == 'failed' else f'{h.get("people", 0)} pessoa(s)'
+                tv.insert('', 'end', values=(when, 'Rostos', h.get('name', ''), res, fmt_dur((h.get('ms') or 0) / 1000)),
+                          tags=('erro',) if h.get('status') == 'failed' else ())
+            else:
+                st = h.get('status')
+                if st == 'done':
+                    res = f'{zc.fmt_size(h.get("before"))} → {zc.fmt_size(h.get("after"))} ({(h.get("codec") or "").upper()})'
+                elif st == 'skipped':
+                    res = 'não ficou menor (mantido)'
+                else:
+                    res = h.get('error') or 'erro'
+                tv.insert('', 'end', values=(when, 'Compressão', h.get('name', ''), res, fmt_dur(h.get('secs') or 0)),
+                          tags=('erro',) if st == 'failed' else ())
+        faces = [h for h in self.history if h.get('kind') == 'faces' and h.get('status') != 'failed']
+        comp = [h for h in self.history if h.get('kind') == 'compress' and h.get('status') == 'done']
+        saved = sum(max(0, (h.get('before') or 0) - (h.get('after') or 0)) for h in comp)
+        self.lbl_hist.configure(text=f'Rostos: {len(faces)} vídeo(s) analisado(s) · Compressão: {len(comp)} vídeo(s), economia de {zc.fmt_size(saved)}')
 
     def add_log(self, line):
         self.log.configure(state='normal')
