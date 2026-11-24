@@ -30,6 +30,7 @@ if sys.stdout is None or sys.stderr is None:
     sys.stdout = sys.stderr = _logf
 
 import zima_worker as zw  # noqa: E402
+import compressor as zc  # noqa: E402
 
 IS_WIN = os.name == 'nt'
 APP = 'Zima Video — Ajudante'
@@ -46,6 +47,8 @@ DEFAULTS = {
     'pause_fullscreen': True,
     'pause_battery': True,
     'close_to_tray': True,
+    'compress': True,          # comprimir os vídeos pedidos no app (nos níveis Médio e Máximo)
+    'compress_gpu': True,      # usar a placa de vídeo para comprimir (bem mais rápido)
 }
 
 
@@ -167,7 +170,7 @@ class App:
 
         root.title(APP)
         root.minsize(470, 560)
-        root.geometry('500x720')
+        root.geometry('520x780')
         root.protocol('WM_DELETE_WINDOW', self.on_close)
         img = make_icon(64)
         if img is not None:
@@ -259,6 +262,9 @@ class App:
         if not IS_WIN: cb.state(['disabled'])
         self.v_tray = tk.BooleanVar()
         ttk.Checkbutton(opts, text='Ao fechar, continuar trabalhando na bandeja (perto do relógio)', variable=self.v_tray, command=self.on_form).pack(anchor='w')
+        self.v_comp = tk.BooleanVar(); self.v_compgpu = tk.BooleanVar()
+        ttk.Checkbutton(opts, text='Comprimir os vídeos pedidos no app (nos níveis Médio e Máximo)', variable=self.v_comp, command=self.on_form).pack(anchor='w')
+        ttk.Checkbutton(opts, text='Comprimir usando a placa de vídeo (bem mais rápido)', variable=self.v_compgpu, command=self.on_form).pack(anchor='w', padx=(20, 0))
 
         # registro
         lf = ttk.LabelFrame(main, text=' Atividade ', padding=6); lf.pack(fill='both', expand=True, pady=(12, 0))
@@ -274,6 +280,7 @@ class App:
         self.v_full.set(bool(c['pause_fullscreen'])); self.v_batt.set(bool(c['pause_battery']))
         self.scale.set(zw.LEVEL_ORDER.index(c.get('fixed_level', 'medio')))
         self.v_tray.set(bool(c['close_to_tray']))
+        self.v_comp.set(bool(c['compress'])); self.v_compgpu.set(bool(c['compress_gpu']))
         self.show_mode()
 
     def show_mode(self):
@@ -302,6 +309,7 @@ class App:
         c['pause_fullscreen'] = bool(self.v_full.get()); c['pause_battery'] = bool(self.v_batt.get())
         c['fixed_level'] = zw.LEVEL_ORDER[int(round(float(self.scale.get())))]
         c['close_to_tray'] = bool(self.v_tray.get())
+        c['compress'] = bool(self.v_comp.get()); c['compress_gpu'] = bool(self.v_compgpu.get())
         self.show_mode()
         try: zw.save_config(c)
         except Exception: pass
@@ -336,6 +344,8 @@ class App:
         level, why = self.decide()
         if self.helper:
             self.helper.set_level(level)
+        if getattr(self, 'comp', None):
+            self.comp.set_level(level)
         info = zw.LEVELS[level]
         self.lbl_now.configure(text=f'Agora: {info["nome"]} — {why}')
         helps = {
@@ -364,6 +374,11 @@ class App:
         level, _ = self.decide()
         self.helper.level = level
         self.helper.start()
+        if getattr(self, 'comp', None):
+            self.comp.stop()
+        self.comp = zc.Compressor(self.cfg, on_event=lambda k, d: self.q.put((k, d)))
+        self.comp.set_level(level)
+        self.comp.start()
 
     def poll(self):
         try:
@@ -387,6 +402,8 @@ class App:
             self.pb.configure(value=0); self.render_state()
         elif kind == 'server':
             self.server_progress = data; self.render_state()
+        elif kind == 'compress':
+            self.render_state()
         elif kind == 'device':
             self.render_state()
         elif kind == 'level':  # o ajudante mudou de nível
@@ -422,6 +439,16 @@ class App:
         if self.server_progress:
             p = self.server_progress
             parts.append(f'Biblioteca: {p.get("done", 0)} de {p.get("total", 0)} vídeos analisados')
+        cp = getattr(self, 'comp', None)
+        if cp:
+            cur = cp.current
+            if cur:
+                parts.append(f'Compressão: {cur["stage"]} “{cur["name"][:40]}” — {cur["pct"]}%'
+                             + (f' · {cur["speed"]}' if cur.get('speed') and cur['stage'] == 'comprimindo' else '') + f' · {cur["enc"]}')
+            if cp.done or cp.failed:
+                parts.append(f'Comprimidos nesta sessão: {cp.done} · economia {zc.fmt_size(cp.saved)}' + (f' · {cp.failed} com erro' if cp.failed else ''))
+            elif not cur and self.cfg.get('compress', True) and self.last_level not in ('medio', 'maximo'):
+                parts.append('Compressão: espera o nível Médio ou Máximo')
         self.lbl_stats.configure(text='\n'.join(parts))
         self.update_tray()
 
@@ -527,6 +554,7 @@ class App:
 
     def quit(self):
         if self.helper: self.helper.stop()
+        if getattr(self, 'comp', None): self.comp.stop()
         if self.tray:
             try: self.tray.stop()
             except Exception: pass

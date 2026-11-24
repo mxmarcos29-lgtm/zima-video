@@ -474,6 +474,7 @@ const Admin = {
     $('#sel-rename').disabled = !n;
     $('#sel-rename').title = n > 1 ? 'Renomear em lote' : 'Renomear (F2)';
     for (const id of ['#sel-move', '#sel-delete', '#sel-tags']) $(id).disabled = !n;
+    $('#sel-compress').disabled = ![...this.sel.values()].some((e) => e.type === 'video' || e.type === 'dir');
   },
 
   // ---------- ações
@@ -823,6 +824,7 @@ const Admin = {
     Sheet.row(b, { ico: 'tag', label: 'Tags parecidas (juntar duplicadas)', chevron: true, onClick: () => Tags.similarSheet() });
     Sheet.row(b, { ico: 'person', label: 'Pessoas (reconhecer pelo nome e pelo rosto)', chevron: true, onClick: () => { Sheet.close(); whenHistoryIdle(() => People.show()); } });
     if (!B.tagView) Sheet.row(b, { ico: 'add', label: 'Nova pasta aqui', onClick: () => this.newFolder() });
+    Sheet.row(b, { ico: 'compress', label: 'Compressor (deixar vídeos menores)', chevron: true, onClick: () => Compress.status() });
     Sheet.row(b, { ico: 'delete', label: 'Lixeira', onClick: () => this.trash() });
     if (!this.fromEnv) Sheet.row(b, { ico: 'lock', label: 'Trocar senha de administrador', onClick: () => this.changePassword() });
     Sheet.row(b, { ico: 'lock', label: 'Sair do modo administrador', onClick: () => { Sheet.close(); this.logout(); } });
@@ -833,6 +835,7 @@ const Admin = {
     Sheet.row(b, { ico: 'edit', label: 'Renomear', onClick: () => this.rename(e) });
     Sheet.row(b, { ico: 'move', label: 'Mover para…', onClick: () => this.move([e]) });
     Sheet.row(b, { ico: 'delete', label: 'Excluir', onClick: () => this.remove([e]) });
+    if (e.type === 'dir' || e.type === 'video') Sheet.row(b, { ico: 'compress', label: e.type === 'dir' ? 'Comprimir os vídeos desta pasta…' : 'Comprimir…', onClick: () => Compress.open([e.path]) });
     if (e.type === 'dir') People.folderRow(b, e);
   },
 };
@@ -924,6 +927,7 @@ $('#sel-rename').onclick = () => {
   if (list.length === 1) Admin.rename(list[0]); else if (list.length > 1) Admin.renameMany(list);
 };
 $('#sel-delete').onclick = () => Admin.remove([...Admin.sel.values()]);
+$('#sel-compress').onclick = () => Compress.open([...Admin.sel.values()].filter((e) => e.type === 'video' || e.type === 'dir').map((e) => e.path));
 document.addEventListener('keydown', (e) => {
   if (!Admin.selecting || e.target.matches('input, textarea')) return;
   if (e.key === 'Escape') { Admin.exitSelect(); e.preventDefault(); }

@@ -177,6 +177,14 @@ Se a GPU falhar com algum arquivo, o servidor volta automaticamente para convers
 | `ADMIN_PASSWORD` | vazio | Senha do modo administrador (opcional: dá para criar a senha pelo app) |
 | `SHOW_HIDDEN` | `0` | `1` mostra arquivos ocultos (`.x`, `@eaDir`…) |
 
+## Compressor (deixar vídeos menores sem bagunçar)
+
+Modo administrador → ⋮ de uma pasta ou vídeo → **Comprimir…**, o botão de compressão na barra de seleção, ou menu ⋮ → **Compressor**.
+- A versão comprimida fica **no mesmo lugar, com o mesmo nome e a mesma data**: tags, rostos, visualizações, favoritos e a ordem por data continuam valendo. Formatos antigos (AVI, WMV…) viram MP4 e a organização acompanha o novo nome. MKV continua MKV (com todas as faixas de áudio e legendas).
+- O original vai para a **Lixeira** (dá para restaurar); o espaço é liberado ao esvaziar a lixeira. Antes de trocar, o arquivo novo é conferido (duração e vídeo); se não ficar pelo menos 8% menor, o original é mantido.
+- Formatos: **Compatível (H.264)**, **Economia (H.265)** e **Máxima economia (AV1)** — o AV1 é o menor, mas aparelhos antigos podem não tocar direto (aí o NAS converte na hora para tocar). Opção de limitar a resolução (1080p/720p). Mostra a economia estimada antes de começar e pula vídeos que já estão compactos.
+- **Onde comprimir:** no **PC**, pelo mesmo Zima Video Ajudante (usa a placa de vídeo — AMD AMF, incluindo AV1 nas RX 7000/9000, NVIDIA NVENC ou Intel QSV — ou o processador), ou no **NAS** (mais lento). O ajudante só comprime nos níveis Médio e Máximo: quando você volta a usar o PC, a compressão congela e continua depois sem perder o que já foi feito.
+
 ## Pasta de cache dentro da biblioteca
 
 Na instalação padrão o cache fica em `/DATA/AppData/zima-video/cache`, que também está dentro de `/DATA` (a biblioteca). O app marca a própria pasta de cache (arquivo `.zima-video-cache`) e a reconhece mesmo vista pelo caminho da biblioteca: ela não aparece na lista, na busca, nas tags, nas sugestões nem na análise de rosto. Tags e análises que tenham ido parar em arquivos do cache em versões antigas são apagadas sozinhas.

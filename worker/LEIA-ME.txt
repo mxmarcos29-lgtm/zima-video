@@ -43,6 +43,15 @@ USAR - A JANELA DO AJUDANTE
  Clique no icone para abrir; com o botao direito: Pausar/Continuar, mudar o nivel ou Sair.
  Marque "Abrir junto com o Windows" para ele iniciar sozinho, escondido na bandeja.
 
+COMPRESSAO DE VIDEOS
+ - No app (modo administrador): menu de uma pasta ou video -> "Comprimir...". Os videos entram numa fila e o
+   ajudante comprime aqui no PC (pela placa de video quando da: AMD, NVIDIA ou Intel; senao pelo processador).
+ - So comprime nos niveis Medio e Maximo. No Automatico, isso significa: quando o PC fica parado.
+   Se voce voltar a usar o PC, a compressao congela e continua depois, sem perder o que ja foi feito.
+ - Na janela: "Comprimir os videos pedidos no app" e "Comprimir usando a placa de video" (mais rapido;
+   os arquivos ficam um pouco maiores que pelo processador).
+ - Usa espaco temporario no PC (pasta TEMP) durante a compressao de cada video.
+
 DICAS
  - Rede: o ajudante le so alguns trechos de cada video (nao baixa o arquivo inteiro).
  - Sem placa de video compativel ele usa o processador (mais lento).
