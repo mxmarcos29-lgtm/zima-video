@@ -24,10 +24,10 @@ ATUALIZAR (ja tinha uma versao anterior)
    A configuracao (endereco e codigo) e os modelos ja baixados continuam.
 
 USAR - A QUALIDADE DA COMPRESSAO
- - Antes de comprimir, o ajudante testa alguns trechos curtos do video com ajustes diferentes e mede a
-   qualidade com VMAF (a metrica da Netflix; 95 = visualmente igual). Escolhe o ajuste que deixa o arquivo
-   menor mantendo o nivel escolhido no app, e pula o video se nao ficaria pelo menos 15% menor.
- - O registro (aba Atividade) mostra cada teste: "ajuste 37 -> VMAF 96.7 (piores momentos 92.9), 30% do tamanho".
+ - Por padrao a compressao e rapida (ajuste fixo de cada nivel de qualidade).
+ - Opcional, no app: "Medir a qualidade antes". O ajudante testa trechos do video com VMAF (metrica da Netflix)
+   e escolhe o ajuste que deixa o arquivo menor mantendo o nivel; pula o que nao compensa. Arquivos menores,
+   mas bem mais lento. O registro (aba Atividade) mostra cada teste.
 
 JANELA DO AJUDANTE
  Abra pelo atalho "Zima Video Ajudante" (ou "abrir_ajudante.bat").

@@ -12,7 +12,7 @@ const Compress = (() => {
     ['economica', 'Econômica', 'VMAF 90 — menor ainda; boa para celular']];
   const RES = [[0, 'Manter'], [1080, 'Até 1080p'], [720, 'Até 720p']];
   const WHERE = [['auto', 'Automático', 'No PC (ajudante) quando ele está ligado; senão no NAS'], ['pc', 'Só no PC', 'Espera o ajudante do PC'], ['nas', 'No NAS', 'Mais lento; não precisa do PC']];
-  const opts = Object.assign({ preset: 'h265', quality: 'alta', maxh: 0, where: 'auto', trash: true }, store.get('compressOpts', {}));
+  const opts = Object.assign({ preset: 'h265', quality: 'alta', maxh: 0, where: 'auto', trash: true, measure: false }, store.get('compressOpts', {}));
   const saveOpts = () => store.set('compressOpts', opts);
 
   // ---------- escolher e confirmar
@@ -37,7 +37,9 @@ const Compress = (() => {
         };
         box.appendChild(group('Formato', PRESETS, 'preset', (p) => `<b>${p[1]}</b><small>${p[2]}</small>`));
         box.appendChild(group('Qualidade', QUAL, 'quality', (p) => `<b>${p[1]}</b><small>${p[2]}</small>`));
-        box.appendChild(el('div', 'pp-note cz-vmaf', 'No PC, o ajudante mede a qualidade de verdade (VMAF, a métrica da Netflix) em trechos de cada vídeo e escolhe o ajuste mais econômico que atinge o nível — e pula o vídeo se não compensar. No NAS usa o ajuste típico do nível.'));
+        const ms = el('label', 'cz-check', `<input type="checkbox"${opts.measure ? ' checked' : ''}> <span><b>Medir a qualidade antes</b> (só no PC) — testa trechos de cada vídeo com VMAF e escolhe o ajuste mais econômico que mantém o nível, pulando o que não compensa. Arquivos bem menores, mas <b>bem mais lento</b>.</span>`);
+        $('input', ms).onchange = (e) => { opts.measure = e.target.checked; saveOpts(); };
+        box.appendChild(ms);
         box.appendChild(group('Resolução máxima', RES, 'maxh', (p) => `<b>${p[1]}</b>`));
         box.appendChild(group('Onde comprimir', WHERE, 'where', (p) => `<b>${p[1]}</b><small>${p[2]}</small>`));
         const tr = el('label', 'cz-check', `<input type="checkbox"${opts.trash ? ' checked' : ''}> Guardar o original na Lixeira (recomendado — o espaço é liberado ao esvaziar a lixeira)`);

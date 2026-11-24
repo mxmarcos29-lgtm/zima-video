@@ -55,37 +55,41 @@ def enc_label(enc):
     return enc
 
 
-def venc_args(enc, codec, q, gop=240, variant=0, fast=False):
+def venc_args(enc, codec, q, gop=240, variant=0, fast=False, best=False, src10=False):
     """Parâmetros do codificador. variant 0 = completo (10 bits e recursos de qualidade);
-    1 = básico (para placas/drivers que recusam algum recurso)."""
+    1 = básico (para placas/drivers que recusam algum recurso).
+    Velocidade: padrão = a de sempre (rápida); best = modo caprichado (só com "Medir a qualidade antes");
+    fast = trechos de teste da medição."""
     q = int(round(q)); g = str(int(gop or 240))
+    # 10 bits só no modo caprichado ou quando o vídeo já é 10 bits (HDR): no processador custa ~30% de tempo
+    pix = 'yuv420p10le' if (best or src10) else 'yuv420p'
     if enc == 'libsvtav1':
-        return ['-c:v', enc, '-crf', str(q), '-preset', '8' if fast else '6', '-g', g, '-pix_fmt', 'yuv420p10le',
-                '-svtav1-params', 'tune=0:enable-variance-boost=1:enable-overlays=1:scd=1']
+        return ['-c:v', enc, '-crf', str(q), '-preset', '6' if best else '8', '-g', g, '-pix_fmt', pix,
+                '-svtav1-params', 'tune=0' + (':enable-overlays=1' if best else '')]
     if enc == 'libx265':
-        return ['-c:v', enc, '-crf', str(q), '-preset', 'fast' if fast else 'medium', '-tag:v', 'hvc1', '-pix_fmt', 'yuv420p10le',
+        return ['-c:v', enc, '-crf', str(q), '-preset', 'fast' if fast else 'medium', '-tag:v', 'hvc1', '-pix_fmt', pix,
                 '-x265-params', f'log-level=error:aq-mode=3:no-sao=1:keyint={g}']
     if enc == 'libx264':
-        return ['-c:v', enc, '-crf', str(q), '-preset', 'medium' if fast else 'slow', '-g', g, '-pix_fmt', 'yuv420p', '-profile:v', 'high', '-aq-mode', '3']
+        return ['-c:v', enc, '-crf', str(q), '-preset', 'slow' if best else 'medium', '-g', g, '-pix_fmt', 'yuv420p', '-profile:v', 'high', '-aq-mode', '3']
     tenbit = variant == 0 and codec != 'h264'
     if enc.endswith('_amf'):
         qp = min(255, q * 4) if codec == 'av1' else q   # AV1 na AMD usa escala 0–255
         qp_p = min(255, qp + 8) if codec == 'av1' else qp + 2
         out = ['-c:v', enc, '-usage', 'transcoding', '-rc', 'cqp', '-qp_i', str(qp), '-qp_p', str(qp_p), '-g', g]
         if variant == 0:
-            out += ['-quality', 'high_quality' if codec == 'av1' else 'quality']
+            out += ['-quality', 'high_quality' if (codec == 'av1' and best) else 'quality']
             if codec == 'av1': out += ['-aq_mode', 'caq']
             else: out += ['-high_motion_quality_boost_enable', '1']
         out += ['-pix_fmt', 'p010le' if tenbit else 'nv12']
         if tenbit and codec == 'hevc': out += ['-profile:v', 'main10']
     elif enc.endswith('_nvenc'):
-        out = ['-c:v', enc, '-preset', 'p6', '-tune', 'hq', '-rc', 'vbr', '-cq', str(q), '-b:v', '0', '-g', g]
-        if variant == 0: out += ['-spatial-aq', '1', '-temporal-aq', '1', '-rc-lookahead', '32']
+        out = ['-c:v', enc, '-preset', 'p6' if best else 'p5', '-tune', 'hq', '-rc', 'vbr', '-cq', str(q), '-b:v', '0', '-g', g]
+        if variant == 0: out += ['-spatial-aq', '1'] + (['-temporal-aq', '1', '-rc-lookahead', '32'] if best else [])
         out += ['-pix_fmt', 'p010le' if tenbit else 'yuv420p']
         if tenbit and codec == 'hevc': out += ['-profile:v', 'main10']
     else:  # _qsv
-        out = ['-c:v', enc, '-global_quality', str(q), '-preset', 'slower', '-g', g]
-        if variant == 0: out += ['-look_ahead_depth', '40']
+        out = ['-c:v', enc, '-global_quality', str(q), '-preset', 'slower' if best else 'medium', '-g', g]
+        if variant == 0 and best: out += ['-look_ahead_depth', '40']
         out += ['-pix_fmt', 'p010le' if tenbit else 'nv12']
     if codec == 'hevc':
         out += ['-tag:v', 'hvc1']
@@ -294,7 +298,7 @@ class Compressor:
             self._wait_allowed()
             enc_f = os.path.join(tmpdir, f'teste{i}.mkv')
             rc, err = self._run_ff([self.ff, '-hide_banner', '-loglevel', 'error', '-y', '-i', sm, *vf,
-                                    *venc_args(enc, codec, q, v.get('gop'), variant, fast=True), '-an', enc_f], timeout=1800)
+                                    *venc_args(enc, codec, q, v.get('gop'), variant, fast=True, src10=v.get('tenbit')), '-an', enc_f], timeout=1800)
             if rc != 0 or not os.path.exists(enc_f):
                 raise RuntimeError(f'teste de compressão falhou: {(err.strip().splitlines() or ["?"])[-1][:150]}')
             # VMAF: o trecho comprimido é ampliado para o tamanho do original (padrão da métrica)
@@ -372,7 +376,8 @@ class Compressor:
         dur = max(1.0, float(job.get('duration') or 1))
         q = start_q(enc, codec, v['crf']); vmaf = None
         # 1) busca de qualidade nos trechos
-        if self._vmaf_ok():
+        measure = bool(v.get('measure'))
+        if measure and self._vmaf_ok():
             self.say(f'Medindo a qualidade de {job["name"]} ({codec.upper()} pela {enc_label(enc)}, alvo VMAF {v.get("vmaf", 95)})…')
             samples = self._samples(url, dur, tmpdir)
             if samples:
@@ -400,7 +405,7 @@ class Compressor:
                                         'secs': int(time.time() - self.current['started']), 'status': 'skipped', 'note': note, 'vmaf': round(vmaf, 1)})
                     return
                 self.say(f'   escolhido: ajuste {q} (VMAF {vmaf:.1f}), deve ficar ~{saving * 100:.0f}% menor')
-        else:
+        elif measure:
             self.say('Este ffmpeg não mede VMAF; usando o ajuste típico do nível de qualidade.')
         # 2) compressão completa
         out = os.path.join(tmpdir, f'{job["id"]}{spec["outExt"]}')
@@ -409,7 +414,7 @@ class Compressor:
             vf = ['-vf', f'scale={v["scale"]}:-2' if v.get('portrait') else f'scale=-2:{v["scale"]}']
         hw = ['-hwaccel', 'auto'] if not enc.startswith('lib') else []   # decodifica na placa e libera o processador
         cmd = [self.ff, '-hide_banner', '-nostdin', '-loglevel', 'error', '-y', *hw, *self._input_args(url),
-               *spec['maps'], *vf, *venc_args(enc, codec, q, v.get('gop'), variant), *spec['post'], '-progress', 'pipe:1', '-nostats', out]
+               *spec['maps'], *vf, *venc_args(enc, codec, q, v.get('gop'), variant, best=measure, src10=v.get('tenbit')), *spec['post'], '-progress', 'pipe:1', '-nostats', out]
         self.say(f'Comprimindo {job["name"]} ({codec.upper()} pela {enc_label(enc)}, ajuste {q})…')
         self.current.update(stage='comprimindo', pct=0)
         flags = NOWINDOW | (PRIO_FLAGS['below'] if IS_WIN else 0)
