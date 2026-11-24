@@ -8,9 +8,11 @@ const Compress = (() => {
     ['h265', 'Economia (H.265)', 'Bem menor. Toca na maioria dos celulares, PCs e TVs atuais.'],
     ['av1', 'Máxima economia (AV1)', 'O menor de todos. Aparelhos antigos (celulares/TVs de alguns anos atrás) podem não tocar bem.'],
   ];
+  const QUAL = [['alta', 'Visualmente igual', 'VMAF 95 — não dá para ver diferença (recomendado)'], ['equilibrada', 'Equilibrada', 'VMAF 93 — diferença só olhando de perto'],
+    ['economica', 'Econômica', 'VMAF 90 — menor ainda; boa para celular']];
   const RES = [[0, 'Manter'], [1080, 'Até 1080p'], [720, 'Até 720p']];
   const WHERE = [['auto', 'Automático', 'No PC (ajudante) quando ele está ligado; senão no NAS'], ['pc', 'Só no PC', 'Espera o ajudante do PC'], ['nas', 'No NAS', 'Mais lento; não precisa do PC']];
-  const opts = Object.assign({ preset: 'h265', maxh: 0, where: 'auto', trash: true }, store.get('compressOpts', {}));
+  const opts = Object.assign({ preset: 'h265', quality: 'alta', maxh: 0, where: 'auto', trash: true }, store.get('compressOpts', {}));
   const saveOpts = () => store.set('compressOpts', opts);
 
   // ---------- escolher e confirmar
@@ -34,6 +36,8 @@ const Compress = (() => {
           g.appendChild(row); return g;
         };
         box.appendChild(group('Formato', PRESETS, 'preset', (p) => `<b>${p[1]}</b><small>${p[2]}</small>`));
+        box.appendChild(group('Qualidade', QUAL, 'quality', (p) => `<b>${p[1]}</b><small>${p[2]}</small>`));
+        box.appendChild(el('div', 'pp-note cz-vmaf', 'No PC, o ajudante mede a qualidade de verdade (VMAF, a métrica da Netflix) em trechos de cada vídeo e escolhe o ajuste mais econômico que atinge o nível — e pula o vídeo se não compensar. No NAS usa o ajuste típico do nível.'));
         box.appendChild(group('Resolução máxima', RES, 'maxh', (p) => `<b>${p[1]}</b>`));
         box.appendChild(group('Onde comprimir', WHERE, 'where', (p) => `<b>${p[1]}</b><small>${p[2]}</small>`));
         const tr = el('label', 'cz-check', `<input type="checkbox"${opts.trash ? ' checked' : ''}> Guardar o original na Lixeira (recomendado — o espaço é liberado ao esvaziar a lixeira)`);
@@ -55,7 +59,7 @@ const Compress = (() => {
         async function estimate() {
           const my = ++seq; out.innerHTML = '<div class="loading"><div class="spinner"></div></div>'; go.disabled = true;
           try {
-            est = await apiPost('compress', { action: 'estimate' }, { paths, preset: opts.preset, maxh: opts.maxh });
+            est = await apiPost('compress', { action: 'estimate' }, { paths, preset: opts.preset, maxh: opts.maxh, quality: opts.quality });
             if (my !== seq) return;
             const save = est.size - est.est;
             out.innerHTML = est.todo
@@ -103,10 +107,10 @@ const Compress = (() => {
         const label = { queued: 'na fila', working: 'comprimindo', done: 'pronto', skipped: 'mantido', failed: 'erro', cancelled: 'cancelado' };
         for (const i of s.items) {
           const row = el('div', `cz-qi ${i.status}`);
-          const fmt = (PRESETS.find((p) => p[0] === i.preset) || [, i.preset])[1];
+          const fmt = (PRESETS.find((p) => p[0] === i.preset) || [, i.preset])[1] + (i.quality ? ` · ${(QUAL.find((x) => x[0] === i.quality) || [, ''])[1]}` : '');
           let info = '';
-          if (i.status === 'working') info = `${i.pct || 0}%${i.speed ? ` · ${esc(i.speed)}` : ''} · ${esc(i.by || '')}`;
-          else if (i.status === 'done') info = `${fmtSize(i.origSize)} → ${fmtSize(i.newSize)} (−${Math.round((1 - i.newSize / i.origSize) * 100)}%)`;
+          if (i.status === 'working') info = `${i.stage === 'medindo qualidade' ? 'medindo a qualidade · ' : ''}${i.pct || 0}%${i.speed ? ` · ${esc(i.speed)}` : ''} · ${esc(i.by || '')}`;
+          else if (i.status === 'done') info = `${fmtSize(i.origSize)} → ${fmtSize(i.newSize)} (−${Math.round((1 - i.newSize / i.origSize) * 100)}%)${i.vmaf ? ` · VMAF ${i.vmaf}` : ''}${i.enc ? ` · ${esc(i.enc)}` : ''}`;
           else if (i.status === 'skipped') info = esc(i.note || 'não ficou menor');
           else if (i.status === 'failed') info = esc(i.error || '');
           else info = `${fmtSize(i.origSize)} → ~${fmtSize(i.est)} · ${i.where === 'pc' ? 'no PC' : i.where === 'nas' ? 'no NAS' : 'PC ou NAS'}`;

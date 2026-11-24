@@ -514,7 +514,8 @@ class App:
             self.lbl_cfile.configure(text='Desligada (marque “Comprimir os vídeos pedidos no app” na aba Uso do PC)')
             self.pbc.configure(value=0); self.lbl_cstats.configure(text=''); return
         if cur:
-            stage = {'comprimindo': 'Comprimindo', 'pausada': 'Pausada (você está usando o PC)', 'enviando': 'Enviando para o NAS'}.get(cur['stage'], cur['stage'])
+            stage = {'comprimindo': 'Comprimindo', 'pausada': 'Pausada (você está usando o PC)', 'enviando': 'Enviando para o NAS',
+                     'medindo qualidade': 'Medindo a qualidade em trechos', 'preparando': 'Preparando'}.get(cur['stage'], cur['stage'])
             self.lbl_cfile.configure(text=f'{stage}: {cur["name"]}')
             self.pbc.configure(value=cur.get('pct') or 0)
             bits = [f'{cur.get("pct") or 0}%']
@@ -522,12 +523,14 @@ class App:
                 if cur.get('speed'): bits.append(f'{cur["speed"]} a velocidade normal do vídeo')
                 if cur.get('eta') is not None: bits.append(f'falta ~{fmt_dur(cur["eta"])}')
             bits.append(f'{(cur.get("codec") or "").upper()} pela {cur["enc"]}')
+            if cur.get('vmaf') is not None: bits.append(f'ajuste {cur.get("q")} → VMAF {cur["vmaf"]:.1f}')
             line = ' · '.join(bits)
         else:
             self.pbc.configure(value=0)
             self.lbl_cfile.configure(text='Aguardando vídeos para comprimir' if self.last_level in ('medio', 'maximo') else 'Espera o nível Médio ou Máximo (PC parado, no modo Automático)')
             line = ''
-        tot = f'Nesta sessão: {cp.done} comprimido(s) · economia {zc.fmt_size(cp.saved)}' + (f' · {cp.failed} com erro' if cp.failed else '')
+        tot = (f'Nesta sessão: {cp.done} comprimido(s) · economia {zc.fmt_size(cp.saved)}' + (f' · {cp.skipped} pulado(s) por não compensar' if getattr(cp, 'skipped', 0) else '')
+               + (f' · {cp.failed} com erro' if cp.failed else ''))
         self.lbl_cstats.configure(text='\n'.join(x for x in (line, tot) if x))
 
     # ---------------- uso do sistema
@@ -600,9 +603,9 @@ class App:
             else:
                 st = h.get('status')
                 if st == 'done':
-                    res = f'{zc.fmt_size(h.get("before"))} → {zc.fmt_size(h.get("after"))} ({(h.get("codec") or "").upper()})'
+                    res = f'{zc.fmt_size(h.get("before"))} → {zc.fmt_size(h.get("after"))} ({(h.get("codec") or "").upper()}' + (f', VMAF {h["vmaf"]:.1f})' if h.get('vmaf') else ')')
                 elif st == 'skipped':
-                    res = 'não ficou menor (mantido)'
+                    res = h.get('note') or 'não ficou menor (mantido)'
                 else:
                     res = h.get('error') or 'erro'
                 tv.insert('', 'end', values=(when, 'Compressão', h.get('name', ''), res, fmt_dur(h.get('secs') or 0)),

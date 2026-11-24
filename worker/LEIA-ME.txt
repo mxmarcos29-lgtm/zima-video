@@ -23,7 +23,13 @@ ATUALIZAR (ja tinha uma versao anterior)
  - Extraia o .zip novo POR CIMA da pasta antiga e rode "instalar.bat" de novo.
    A configuracao (endereco e codigo) e os modelos ja baixados continuam.
 
-USAR - A JANELA DO AJUDANTE
+USAR - A QUALIDADE DA COMPRESSAO
+ - Antes de comprimir, o ajudante testa alguns trechos curtos do video com ajustes diferentes e mede a
+   qualidade com VMAF (a metrica da Netflix; 95 = visualmente igual). Escolhe o ajuste que deixa o arquivo
+   menor mantendo o nivel escolhido no app, e pula o video se nao ficaria pelo menos 15% menor.
+ - O registro (aba Atividade) mostra cada teste: "ajuste 37 -> VMAF 96.7 (piores momentos 92.9), 30% do tamanho".
+
+JANELA DO AJUDANTE
  Abra pelo atalho "Zima Video Ajudante" (ou "abrir_ajudante.bat").
 
  Quanto do PC o ajudante pode usar:
