@@ -395,7 +395,14 @@ class Compressor:
                         except Exception: pass
                 self.current.update(vmaf=round(vmaf, 1), q=q)
                 saving = 1 - ratio
-                if saving < MIN_SAVING:
+                if v.get('force') and (saving < MIN_SAVING or not reached):
+                    # "comprimir mesmo se não atingir o padrão": não pula. Se nenhum ajuste chegou no alvo, usa o
+                    # ajuste típico do nível (como sem a medição); o servidor só troca se ficar menor que o original.
+                    if not reached:
+                        q = start_q(enc, codec, v['crf'])
+                        vmaf = None; self.current.update(vmaf=None, q=q)  # a nota medida era de outro ajuste
+                    self.say(f'   não atingiu o padrão, mas comprimindo mesmo assim (opção marcada no app): ajuste {q}')
+                elif saving < MIN_SAVING:
                     note = (f'não compensa: para manter a qualidade (VMAF {vmaf:.0f}) ficaria só {max(0, saving) * 100:.0f}% menor'
                             if reached else f'não compensa: nem com o ajuste de mais qualidade chegou no alvo (VMAF {vmaf:.0f})')
                     self.skipped += 1
@@ -404,7 +411,8 @@ class Compressor:
                     self.emit('cdone', {'name': job['name'], 'codec': codec, 'enc': enc_label(enc), 'before': job.get('size'), 'after': job.get('size'),
                                         'secs': int(time.time() - self.current['started']), 'status': 'skipped', 'note': note, 'vmaf': round(vmaf, 1)})
                     return
-                self.say(f'   escolhido: ajuste {q} (VMAF {vmaf:.1f}), deve ficar ~{saving * 100:.0f}% menor')
+                if vmaf is not None:
+                    self.say(f'   escolhido: ajuste {q} (VMAF {vmaf:.1f}), deve ficar ~{saving * 100:.0f}% menor')
         elif measure:
             self.say('Este ffmpeg não mede VMAF; usando o ajuste típico do nível de qualidade.')
         # 2) compressão completa

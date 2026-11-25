@@ -12,7 +12,7 @@ const Compress = (() => {
     ['economica', 'Econômica', 'VMAF 90 — menor ainda; boa para celular']];
   const RES = [[0, 'Manter'], [1080, 'Até 1080p'], [720, 'Até 720p']];
   const WHERE = [['auto', 'Automático', 'No PC (ajudante) quando ele está ligado; senão no NAS'], ['pc', 'Só no PC', 'Espera o ajudante do PC'], ['nas', 'No NAS', 'Mais lento; não precisa do PC']];
-  const opts = Object.assign({ preset: 'h265', quality: 'alta', maxh: 0, where: 'auto', trash: true, measure: false }, store.get('compressOpts', {}));
+  const opts = Object.assign({ preset: 'h265', quality: 'alta', maxh: 0, where: 'auto', trash: true, measure: false, force: false }, store.get('compressOpts', {}));
   const saveOpts = () => store.set('compressOpts', opts);
 
   // ---------- escolher e confirmar
@@ -40,6 +40,9 @@ const Compress = (() => {
         const ms = el('label', 'cz-check', `<input type="checkbox"${opts.measure ? ' checked' : ''}> <span><b>Medir a qualidade antes</b> (só no PC) — testa trechos de cada vídeo com VMAF e escolhe o ajuste mais econômico que mantém o nível, pulando o que não compensa. Arquivos bem menores, mas <b>bem mais lento</b>.</span>`);
         $('input', ms).onchange = (e) => { opts.measure = e.target.checked; saveOpts(); };
         box.appendChild(ms);
+        const fc = el('label', 'cz-check', `<input type="checkbox"${opts.force ? ' checked' : ''}> <span><b>Comprimir mesmo se não atingir o padrão</b> — não pula vídeos que já parecem compactos, que não chegam na nota de qualidade ou que diminuiriam pouco. O original só é trocado se o arquivo novo ficar menor.</span>`);
+        $('input', fc).onchange = (e) => { opts.force = e.target.checked; saveOpts(); estimate(); };
+        box.appendChild(fc);
         box.appendChild(group('Resolução máxima', RES, 'maxh', (p) => `<b>${p[1]}</b>`));
         box.appendChild(group('Onde comprimir', WHERE, 'where', (p) => `<b>${p[1]}</b><small>${p[2]}</small>`));
         const tr = el('label', 'cz-check', `<input type="checkbox"${opts.trash ? ' checked' : ''}> Guardar o original na Lixeira (recomendado — o espaço é liberado ao esvaziar a lixeira)`);
@@ -61,7 +64,7 @@ const Compress = (() => {
         async function estimate() {
           const my = ++seq; out.innerHTML = '<div class="loading"><div class="spinner"></div></div>'; go.disabled = true;
           try {
-            est = await apiPost('compress', { action: 'estimate' }, { paths, preset: opts.preset, maxh: opts.maxh, quality: opts.quality });
+            est = await apiPost('compress', { action: 'estimate' }, { paths, preset: opts.preset, maxh: opts.maxh, quality: opts.quality, force: opts.force });
             if (my !== seq) return;
             const save = est.size - est.est;
             out.innerHTML = est.todo

@@ -1758,7 +1758,7 @@ const targetRate = (preset, h) => (COMPRESS_PRESETS[preset].rate.find(([k]) => h
 const MP4_AUDIO = ['aac', 'mp3', 'ac3', 'eac3'];
 const MKV_AUDIO = ['aac', 'mp3', 'ac3', 'eac3', 'opus', 'flac', 'vorbis', 'dts', 'truehd'];
 
-async function compressPlan(rel, preset, maxh, quality = 'alta') {
+async function compressPlan(rel, preset, maxh, quality = 'alta', force = false) {
   const abs = resolveSafe(rel); const st = await statSafe(abs);
   const name = path.posix.basename(rel);
   if (!st || !st.isFile() || typeOf(abs) !== 'video') return null;
@@ -1775,6 +1775,8 @@ async function compressPlan(rel, preset, maxh, quality = 'alta') {
   else if (preset === 'h265' && info.video.codec === 'av1') plan.skip = 'já está em AV1';
   else if (preset === 'av1' && info.video.codec === 'av1' && plan.est >= st.size * 0.8) plan.skip = 'já está em AV1';
   else if (plan.est >= st.size * 0.8) plan.skip = 'já está compacto';
+  // "comprimir mesmo se não atingir o padrão": não pula por estimativa (só a troca final exige ficar menor)
+  if (force && plan.skip) { plan.note = plan.skip; delete plan.skip; }
   return plan;
 }
 // receita do ffmpeg (a mesma para o NAS e para o ajudante; o ajudante pode trocar só o codificador de vídeo)
@@ -1794,7 +1796,7 @@ function audioArgs(info, mkv) {
   });
   return out;
 }
-function compressSpec(info, rel, preset, maxh, quality = 'alta', measure = false) {
+function compressSpec(info, rel, preset, maxh, quality = 'alta', measure = false, force = false) {
   const ext = path.extname(rel).toLowerCase();
   const mkv = ext === '.mkv';
   const outExt = mkv ? '.mkv' : '.mp4';
@@ -1814,7 +1816,7 @@ function compressSpec(info, rel, preset, maxh, quality = 'alta', measure = false
   const codec = COMPRESS_PRESETS[preset].codec; const Q = qualityOf(quality);
   // quadro-chave a cada ~10 s (busca rápida no player sem desperdiçar bits)
   const gop = Math.max(24, Math.min(600, Math.round((info.video.fps || 30) * 10)));
-  return { outExt, maps, post, v: { codec, crf: Q.crf[codec], vmaf: Q.vmaf, measure: !!measure, gop, scale, portrait, tenbit: /10/.test(info.video.pix_fmt || ''),
+  return { outExt, maps, post, v: { codec, crf: Q.crf[codec], vmaf: Q.vmaf, measure: !!measure, force: !!force, gop, scale, portrait, tenbit: /10/.test(info.video.pix_fmt || ''),
     width: info.video.width, height: info.video.height } };
 }
 function ffArgsFor(spec, input, output) {
@@ -1844,7 +1846,7 @@ async function finishCompress(it, tmpAbs) {
   let i0; let i1;
   try { i0 = await probe(abs); i1 = await probe(tmpAbs); } catch { throw new Error('o arquivo comprimido está com defeito'); }
   if (!i1.video || Math.abs(i1.duration - i0.duration) > Math.max(2, i0.duration * 0.01)) throw new Error('o arquivo comprimido ficou incompleto');
-  if (st1.size >= st0.size * 0.92) {
+  if (st1.size >= st0.size * (it.force ? 1 : 0.92)) { // forçado: basta ficar menor que o original
     await fsp.rm(tmpAbs, { force: true });
     it.status = 'skipped'; it.note = 'não ficou menor — mantive o original'; it.newSize = st1.size; return;
   }
@@ -1871,16 +1873,16 @@ async function finishCompress(it, tmpAbs) {
   it.status = 'done'; it.newSize = st1.size; it.finalPath = relOf(finalAbs); it.pct = 100;
 }
 
-async function compressAdd({ paths = [], preset = 'h265', maxh = 0, where = 'auto', trash = true, quality = 'alta', measure = false }) {
+async function compressAdd({ paths = [], preset = 'h265', maxh = 0, where = 'auto', trash = true, quality = 'alta', measure = false, force = false }) {
   if (!COMPRESS_PRESETS[preset]) throw new HttpError(400, 'Formato inválido');
   const db = await loadCompress();
   const queued = new Set(db.items.filter((i) => ['queued', 'working'].includes(i.status)).map((i) => i.path));
   let n = 0;
   for (const rel0 of await expandVideos(paths)) {
     if (queued.has(rel0)) continue;
-    const plan = await compressPlan(rel0, preset, +maxh || 0, quality);
+    const plan = await compressPlan(rel0, preset, +maxh || 0, quality, !!force);
     if (!plan || plan.skip) continue;
-    db.items.push({ id: crypto.randomBytes(5).toString('hex'), path: rel0, name: plan.name, preset, quality: COMPRESS_QUALITY[quality] ? quality : 'alta', measure: !!measure, maxh: +maxh || 0, where, trash: trash !== false,
+    db.items.push({ id: crypto.randomBytes(5).toString('hex'), path: rel0, name: plan.name, preset, quality: COMPRESS_QUALITY[quality] ? quality : 'alta', measure: !!measure, force: !!force, maxh: +maxh || 0, where, trash: trash !== false,
       status: 'queued', pct: 0, origSize: plan.size, est: plan.est, duration: plan.duration, added: Date.now() });
     n++;
   }
@@ -1901,11 +1903,11 @@ async function expandVideos(paths, stats = {}) {
   stats.excluded = skipped.size; // vídeos em pastas excluídas da compressão (ficam de fora)
   return [...out].slice(0, 5000);
 }
-async function compressEstimate({ paths = [], preset = 'h265', maxh = 0, quality = 'alta' }) {
+async function compressEstimate({ paths = [], preset = 'h265', maxh = 0, quality = 'alta', force = false }) {
   const stats = {};
   const list = (await expandVideos(paths, stats)).slice(0, 2000);
   const items = [];
-  for (const rel of list) { const pl = await compressPlan(rel, preset, +maxh || 0, quality); if (pl) items.push(pl); }
+  for (const rel of list) { const pl = await compressPlan(rel, preset, +maxh || 0, quality, !!force); if (pl) items.push(pl); }
   const go = items.filter((x) => !x.skip);
   return { items: items.slice(0, 500), count: items.length, todo: go.length, size: go.reduce((a, x) => a + x.size, 0), est: go.reduce((a, x) => a + x.est, 0), skipped: items.length - go.length,
     excluded: stats.excluded || 0 };
@@ -1933,7 +1935,7 @@ async function compressTick() {
   if (!it) return;
   const abs = resolveSafe(it.path);
   let info; try { info = await probe(abs); } catch (e) { it.status = 'failed'; it.error = 'não consegui ler o vídeo'; return saveCompress(); }
-  const spec = compressSpec(info, it.path, it.preset, it.maxh, it.quality, it.measure);
+  const spec = compressSpec(info, it.path, it.preset, it.maxh, it.quality, it.measure, it.force);
   const tmp = compressTmp(abs, it.id, spec.outExt);
   it.status = 'working'; it.by = 'NAS'; it.started = Date.now(); it.pct = 0; saveCompress();
   const args = ffArgsFor(spec, abs, tmp);
@@ -1967,7 +1969,7 @@ async function compressJobForWorker(t) {
   if (!it) return { none: true };
   const abs = resolveSafe(it.path);
   let info; try { info = await probe(abs); } catch { it.status = 'failed'; it.error = 'não consegui ler o vídeo'; saveCompress(); return { none: true }; }
-  const spec = compressSpec(info, it.path, it.preset, it.maxh, it.quality, it.measure);
+  const spec = compressSpec(info, it.path, it.preset, it.maxh, it.quality, it.measure, it.force);
   it.status = 'working'; it.by = t.name; it.started = now; it.beat = now; it.pct = 0; await saveCompress(true);
   return { id: it.id, name: it.name, duration: info.duration, size: it.origSize, spec, url: `/api/worker/file?${new URLSearchParams({ path: it.path })}` };
 }
