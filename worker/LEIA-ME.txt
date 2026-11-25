@@ -24,10 +24,12 @@ ATUALIZAR (ja tinha uma versao anterior)
    A configuracao (endereco e codigo) e os modelos ja baixados continuam.
 
 USAR - A QUALIDADE DA COMPRESSAO
- - Por padrao a compressao e rapida (ajuste fixo de cada nivel de qualidade).
- - Opcional, no app: "Medir a qualidade antes". O ajudante testa trechos do video com VMAF (metrica da Netflix)
-   e escolhe o ajuste que deixa o arquivo menor mantendo o nivel; pula o que nao compensa. Arquivos menores,
-   mas bem mais lento. O registro (aba Atividade) mostra cada teste.
+ - Qualidade em primeiro lugar (padrao): ajustes mais lentos e caprichados (10 bits em AV1/H.265).
+ - "Medir a qualidade antes" (ligado por padrao no app): o ajudante testa trechos do video com VMAF (metrica
+   da Netflix) e escolhe o ajuste que deixa o arquivo menor mantendo o nivel; pula o que nao compensa.
+   Demora mais, mas nao estraga o video. O registro (aba Atividade) mostra cada teste.
+ - Dica: para a melhor qualidade por tamanho, desmarque "Comprimir usando a placa de video" (o processador
+   e mais lento, mas comprime melhor).
 
 JANELA DO AJUDANTE
  Abra pelo atalho "Zima Video Ajudante" (ou "abrir_ajudante.bat").

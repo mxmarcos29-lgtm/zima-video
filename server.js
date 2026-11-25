@@ -1725,6 +1725,8 @@ async function loadCompress() {
     compressDb = await loadJSON(COMPRESS_FILE, { items: [] });
     if (!Array.isArray(compressDb.items)) compressDb.items = [];
     for (const it of compressDb.items) if (it.status === 'working') { it.status = 'queued'; it.pct = 0; it.by = null; }
+    // os que já estavam na fila pelo modo rápido passam a medir a qualidade antes (qualidade em primeiro lugar)
+    if (!compressDb.q2) { compressDb.q2 = 1; for (const it of compressDb.items) if (it.status === 'queued') it.measure = true; }
   }
   return compressDb;
 }
@@ -1749,9 +1751,9 @@ run(FFMPEG, ['-hide_banner', '-encoders'], { timeout: 15000 }).then((b) => {
 // níveis de qualidade: nota VMAF alvo (o ajudante do PC mede de verdade em trechos do vídeo e escolhe o ajuste
 // mais econômico que atinge a nota; o NAS usa o ajuste típico do nível). 95 ≈ visualmente igual ao original.
 const COMPRESS_QUALITY = {
-  alta: { nome: 'Visualmente igual', vmaf: 95, crf: { h264: 22, hevc: 25, av1: 32 }, rate: 1 },
-  equilibrada: { nome: 'Equilibrada', vmaf: 93, crf: { h264: 24, hevc: 27, av1: 35 }, rate: 0.85 },
-  economica: { nome: 'Econômica', vmaf: 90, crf: { h264: 26, hevc: 29, av1: 38 }, rate: 0.7 },
+  alta: { nome: 'Visualmente igual', vmaf: 95, crf: { h264: 19, hevc: 22, av1: 27 }, rate: 1.25 },
+  equilibrada: { nome: 'Equilibrada', vmaf: 93, crf: { h264: 21, hevc: 24, av1: 31 }, rate: 1 },
+  economica: { nome: 'Econômica', vmaf: 90, crf: { h264: 23, hevc: 27, av1: 35 }, rate: 0.75 },
 };
 const qualityOf = (q) => COMPRESS_QUALITY[q] || COMPRESS_QUALITY.alta;
 const targetRate = (preset, h) => (COMPRESS_PRESETS[preset].rate.find(([k]) => h >= k * 0.9) || [0, 0.5e6])[1];
@@ -1822,14 +1824,16 @@ function compressSpec(info, rel, preset, maxh, quality = 'alta', measure = false
 function ffArgsFor(spec, input, output) {
   const v = spec.v;
   const vf = []; if (v.scale) vf.push(v.portrait ? `scale=${v.scale}:-2` : `scale=-2:${v.scale}`);
-  // velocidade de sempre (presets rápidos); 10 bits só quando o vídeo já é 10 bits (HDR)
+  // qualidade em primeiro lugar (mais lento): parâmetros dos guias da comunidade (SVT-AV1, x265, x264);
+  // sempre 10 bits em AV1/H.265 (menos faixas/degraus nas sombras e no céu, mesmo vindo de 8 bits)
   const g = String(v.gop || 240);
   const venc = v.codec === 'av1'
-    ? ['-c:v', 'libsvtav1', '-crf', String(v.crf), '-preset', '8', '-g', g, '-pix_fmt', v.tenbit ? 'yuv420p10le' : 'yuv420p', '-svtav1-params', 'tune=0']
+    ? ['-c:v', 'libsvtav1', '-crf', String(v.crf), '-preset', '6', '-g', g, '-pix_fmt', 'yuv420p10le',
+      '-svtav1-params', 'tune=0:enable-variance-boost=1:enable-overlays=1:scd=1']
     : v.codec === 'hevc'
-      ? ['-c:v', 'libx265', '-crf', String(v.crf), '-preset', 'medium', '-tag:v', 'hvc1', '-pix_fmt', v.tenbit ? 'yuv420p10le' : 'yuv420p',
+      ? ['-c:v', 'libx265', '-crf', String(v.crf), '-preset', 'slow', '-tag:v', 'hvc1', '-pix_fmt', 'yuv420p10le',
         '-x265-params', `log-level=error:aq-mode=3:no-sao=1:keyint=${g}`]
-      : ['-c:v', 'libx264', '-crf', String(v.crf), '-preset', 'medium', '-g', g, '-pix_fmt', 'yuv420p', '-profile:v', 'high', '-aq-mode', '3'];
+      : ['-c:v', 'libx264', '-crf', String(v.crf), '-preset', 'slow', '-g', g, '-pix_fmt', 'yuv420p', '-profile:v', 'high', '-aq-mode', '3'];
   return ['-hide_banner', '-nostdin', '-loglevel', 'error', '-y', '-i', input, ...spec.maps, ...(vf.length ? ['-vf', vf.join(',')] : []), ...venc, ...spec.post,
     '-progress', 'pipe:1', '-nostats', output];
 }

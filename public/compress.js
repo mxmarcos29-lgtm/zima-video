@@ -13,6 +13,7 @@ const Compress = (() => {
   const RES = [[0, 'Manter'], [1080, 'Até 1080p'], [720, 'Até 720p']];
   const WHERE = [['auto', 'Automático', 'No PC (ajudante) quando ele está ligado; senão no NAS'], ['pc', 'Só no PC', 'Espera o ajudante do PC'], ['nas', 'No NAS', 'Mais lento; não precisa do PC']];
   const opts = Object.assign({ preset: 'h265', quality: 'alta', maxh: 0, where: 'auto', trash: true, measure: false, force: false }, store.get('compressOpts', {}));
+  if (!opts.q2) { opts.measure = true; opts.q2 = 1; } // qualidade em primeiro lugar volta a ser o padrão
   const saveOpts = () => store.set('compressOpts', opts);
 
   // ---------- escolher e confirmar
@@ -37,7 +38,7 @@ const Compress = (() => {
         };
         box.appendChild(group('Formato', PRESETS, 'preset', (p) => `<b>${p[1]}</b><small>${p[2]}</small>`));
         box.appendChild(group('Qualidade', QUAL, 'quality', (p) => `<b>${p[1]}</b><small>${p[2]}</small>`));
-        const ms = el('label', 'cz-check', `<input type="checkbox"${opts.measure ? ' checked' : ''}> <span><b>Medir a qualidade antes</b> (só no PC) — testa trechos de cada vídeo com VMAF e escolhe o ajuste mais econômico que mantém o nível, pulando o que não compensa. Arquivos bem menores, mas <b>bem mais lento</b>.</span>`);
+        const ms = el('label', 'cz-check', `<input type="checkbox"${opts.measure ? ' checked' : ''}> <span><b>Medir a qualidade antes</b> (só no PC) — testa trechos de cada vídeo com VMAF e escolhe o ajuste mais econômico que mantém o nível, pulando o que não compensa. Recomendado: garante a qualidade e deixa o arquivo o menor possível. <b>Mais lento.</b></span>`);
         $('input', ms).onchange = (e) => { opts.measure = e.target.checked; saveOpts(); };
         box.appendChild(ms);
         const fc = el('label', 'cz-check', `<input type="checkbox"${opts.force ? ' checked' : ''}> <span><b>Comprimir mesmo se não atingir o padrão</b> — não pula vídeos que já parecem compactos, que não chegam na nota de qualidade ou que diminuiriam pouco. O original só é trocado se o arquivo novo ficar menor.</span>`);

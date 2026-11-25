@@ -70,21 +70,21 @@ def enc_label(enc):
 def venc_args(enc, codec, q, gop=240, variant=0, fast=False, best=False, src10=False):
     """Parâmetros do codificador. variant 0 = completo (10 bits e recursos de qualidade);
     1 = básico (para placas/drivers que recusam algum recurso).
-    Velocidade: padrão = a de sempre (rápida); best = modo caprichado (só com "Medir a qualidade antes");
+    best = qualidade em primeiro lugar (padrão na compressão de verdade: mais lento, não estraga o vídeo);
     fast = trechos de teste da medição."""
     q = int(round(q)); g = str(int(gop or 240))
-    # 10 bits só no modo caprichado ou quando o vídeo já é 10 bits (HDR): no processador custa ~30% de tempo
+    # 10 bits no modo caprichado (menos faixas/degraus nas sombras) ou quando o vídeo já é 10 bits (HDR)
     pix = 'yuv420p10le' if (best or src10) else 'yuv420p'
     if enc == 'libsvtav1':
         out = ['-c:v', enc, '-crf', str(q), '-preset', '6' if best else '8', '-g', g, '-pix_fmt', pix]
-        if variant == 0: out += ['-svtav1-params', 'tune=0' + (':enable-overlays=1' if best else '')]
+        if variant == 0: out += ['-svtav1-params', 'tune=0' + (':enable-variance-boost=1:enable-overlays=1:scd=1' if best else '')]
         return out
     if enc == 'libaom-av1':
         return ['-c:v', enc, '-crf', str(q), '-b:v', '0', '-cpu-used', '4' if best else '6', '-row-mt', '1', '-tiles', '2x2', '-g', g, '-pix_fmt', pix]
     if enc == 'librav1e':
         return ['-c:v', enc, '-qp', str(min(255, q * 4)), '-speed', '6' if best else '8', '-g', g, '-pix_fmt', pix]
     if enc == 'libx265':
-        return ['-c:v', enc, '-crf', str(q), '-preset', 'fast' if fast else 'medium', '-tag:v', 'hvc1', '-pix_fmt', pix,
+        return ['-c:v', enc, '-crf', str(q), '-preset', 'fast' if fast else ('slow' if best else 'medium'), '-tag:v', 'hvc1', '-pix_fmt', pix,
                 '-x265-params', f'log-level=error:aq-mode=3:no-sao=1:keyint={g}']
     if enc == 'libx264':
         return ['-c:v', enc, '-crf', str(q), '-preset', 'slow' if best else 'medium', '-g', g, '-pix_fmt', 'yuv420p', '-profile:v', 'high', '-aq-mode', '3']
@@ -469,7 +469,7 @@ class Compressor:
             vf = ['-vf', f'scale={v["scale"]}:-2' if v.get('portrait') else f'scale=-2:{v["scale"]}']
         hw = ['-hwaccel', 'auto'] if not enc.startswith('lib') else []   # decodifica na placa e libera o processador
         cmd = [self.ff, '-hide_banner', '-nostdin', '-loglevel', 'error', '-y', *hw, *self._input_args(url),
-               *spec['maps'], *vf, *venc_args(enc, codec, q, v.get('gop'), variant, best=measure, src10=v.get('tenbit')), *spec['post'], '-progress', 'pipe:1', '-nostats', out]
+               *spec['maps'], *vf, *venc_args(enc, codec, q, v.get('gop'), variant, best=True, src10=v.get('tenbit')), *spec['post'], '-progress', 'pipe:1', '-nostats', out]
         self.say(f'Comprimindo {job["name"]} ({codec.upper()} pela {enc_label(enc)}, ajuste {q})…')
         self.current.update(stage='comprimindo', pct=0)
         flags = NOWINDOW | (PRIO_FLAGS['below'] if IS_WIN else 0)
