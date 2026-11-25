@@ -502,8 +502,13 @@ class Helper:
             try:
                 self._wait_if_paused()
                 try:
-                    job = api(self.cfg, 'GET', '/api/worker/job')
+                    job = api(self.cfg, 'GET', '/api/worker/job', timeout=(10, 120))
                     fails = 0
+                except requests.exceptions.ReadTimeout:
+                    # o NAS respondeu à conexão mas demorou (disco ocupado ou acordando): não é falta de conexão
+                    self.emit('state', {'state': 'idle'})
+                    self.say('O NAS está ocupado e demorou para responder (disco lento ou acordando). Nova tentativa em 20s.')
+                    self._sleep(20); continue
                 except Exception as e:
                     fails += 1
                     wait = min(300, 10 * fails)
@@ -514,6 +519,8 @@ class Helper:
                     self.emit('server', job['progress'])
                 if job.get('none'):
                     self.emit('state', {'state': 'idle'})
+                    if job.get('busy'):
+                        self.say(f'O NAS está ocupado lendo os arquivos (disco lento ou acordando). Nova tentativa em {job.get("wait", 15)}s.')
                     self._sleep(job.get('wait', 60)); continue
                 self.current = job['path']
                 self.emit('state', {'state': 'working', 'path': job['path']})

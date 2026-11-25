@@ -277,7 +277,7 @@ class Compressor:
             if not self.allowed():
                 self._sleep(5); continue
             try:
-                job = self._api('GET', '/api/worker/compress-job')
+                job = self._api('GET', '/api/worker/compress-job', timeout=(10, 120))
             except Exception:
                 self._sleep(60); continue
             if job.get('none'):

@@ -2636,8 +2636,30 @@ async function requireWorker(req) {
   return t;
 }
 let workerInfoV = 0;
+let workerProgress = null;
+// o ajudante espera a resposta por tempo limitado: se o disco estiver lento (HD acordando, NAS comprimindo),
+// o servidor para de examinar arquivos depois de ~15 s e pede para ele tentar de novo daqui a pouco.
+// O exame que estava em andamento continua e fica guardado, então a próxima tentativa é rápida.
+const WORKER_JOB_BUDGET = 15000;
+class ProbeSlow extends Error {}
+function probeWithin(abs, deadline) { return withinDeadline(probe(abs), deadline); }
+async function withinDeadline(p, deadline) {
+  p.catch(() => {});
+  const left = deadline - Date.now();
+  if (left <= 0) throw new ProbeSlow();
+  let timer;
+  try {
+    return await Promise.race([p, new Promise((_, rej) => { timer = setTimeout(() => rej(new ProbeSlow()), left); })]);
+  } finally { clearTimeout(timer); }
+}
 async function nextWorkerJob() {
-  const idx = await getIndex();
+  try { return await nextWorkerJobInner(Date.now() + WORKER_JOB_BUDGET); } catch (e) {
+    if (e instanceof ProbeSlow) return { none: true, wait: 15, busy: true };
+    throw e;
+  }
+}
+async function nextWorkerJobInner(deadline) {
+  const idx = await withinDeadline(getIndex(), deadline + 15000); // lista de arquivos sendo montada (logo após ligar)
   const now = Date.now();
   for (const it of idx) {
     if (it.t !== 'video') continue;
@@ -2646,7 +2668,7 @@ async function nextWorkerJob() {
     if ((workerFails.get(it.p) || 0) >= 3) continue;
     const abs = path.join(ROOT, it.p);
     const st = await statSafe(abs); if (!st) continue;
-    let duration = 0; try { duration = (await probe(abs)).duration; } catch { workerFails.set(it.p, (workerFails.get(it.p) || 0) + 1); continue; }
+    let duration = 0; try { duration = (await probeWithin(abs, deadline)).duration; } catch (e) { if (e instanceof ProbeSlow) throw e; workerFails.set(it.p, (workerFails.get(it.p) || 0) + 1); continue; }
     workerJobs.set(it.p, now + 15 * 60000);
     return { path: it.p, key: `${st.size}|${st.mtimeMs}`, duration, url: `/api/worker/file?${new URLSearchParams({ path: it.p })}` };
   }
@@ -2662,7 +2684,7 @@ async function nextWorkerJob() {
     for (const it of old.slice(0, 20)) {
       const abs = path.join(ROOT, it.p);
       const st = await statSafe(abs); if (!st) continue;
-      let duration = 0; try { duration = (await probe(abs)).duration; } catch { workerFails.set(it.p, (workerFails.get(it.p) || 0) + 1); continue; }
+      let duration = 0; try { duration = (await probeWithin(abs, deadline)).duration; } catch (e) { if (e instanceof ProbeSlow) throw e; workerFails.set(it.p, (workerFails.get(it.p) || 0) + 1); continue; }
       workerJobs.set(it.p, now + 15 * 60000);
       return { path: it.p, key: `${st.size}|${st.mtimeMs}`, duration, upgrade: true, url: `/api/worker/file?${new URLSearchParams({ path: it.p })}` };
     }
@@ -2676,7 +2698,7 @@ async function nextWorkerJob() {
     if ((workerJobs.get(it.p) || 0) > now || (workerRetry.get(it.p) || 0) >= 2) continue;
     const abs = path.join(ROOT, it.p);
     const st = await statSafe(abs); if (!st) continue;
-    let duration = 0; try { duration = (await probe(abs)).duration; } catch { continue; }
+    let duration = 0; try { duration = (await probeWithin(abs, deadline)).duration; } catch (e) { if (e instanceof ProbeSlow) throw e; continue; }
     workerRetry.set(it.p, (workerRetry.get(it.p) || 0) + 1);
     workerJobs.set(it.p, now + 15 * 60000);
     return { path: it.p, key: `${st.size}|${st.mtimeMs}`, duration, retry: true, url: `/api/worker/file?${new URLSearchParams({ path: it.p })}` };
@@ -3045,8 +3067,12 @@ const server = http.createServer(async (req, res) => {
         await requireWorker(req);
         workerInfoV = +(req.headers['x-worker-v'] || 0); // versão da análise que este ajudante faz
         const job = await nextWorkerJob();
-        const st = await peopleStatus(); // para a janela do ajudante mostrar "X de Y vídeos analisados"
-        return sendJSON(res, { ...job, progress: { done: st.analyzed, total: st.videos, failed: st.failed } });
+        // para a janela do ajudante mostrar "X de Y vídeos analisados" (guardado por 30 s: não precisa ser exato)
+        if (!workerProgress || Date.now() - workerProgress.at > 30000) {
+          const st = await peopleStatus(); workerProgress = { at: Date.now(), done: st.analyzed, total: st.videos, failed: st.failed };
+        }
+        const { at: _at, ...progress } = workerProgress;
+        return sendJSON(res, { ...job, progress });
       }
       case '/api/worker/result': await requireWorker(req); return sendJSON(res, await workerResult(await readBody(req, 64 * 1024 * 1024)));
       case '/api/worker/compress-job': { const t = await requireWorker(req); return sendJSON(res, await compressJobForWorker(t)); }
