@@ -100,6 +100,15 @@ const Compress = (() => {
         const head = el('div', 'cz-head');
         head.innerHTML = `<div><b>${fmtSize(s.saved)}</b> economizados</div><div class="pp-sub">${s.working ? `${s.working} comprimindo` : 'nada comprimindo agora'}${s.queued ? ` · ${s.queued} na fila` : ''} · ${s.pc ? 'ajudante do PC ligado' : 'ajudante do PC desligado'}${s.nas ? ' · NAS comprimindo' : ''}</div>`;
         body.appendChild(head);
+        // o que cada PC consegue comprimir (testado no próprio PC pelo ajudante)
+        for (const pc of s.pcs || []) {
+          const names = { av1: 'AV1', hevc: 'H.265', h264: 'H.264' };
+          const parts = Object.entries(pc.caps || {}).map(([c, x]) => (x.enc ? `${names[c]} ✓ ${esc(x.label || '')}` : `<span class="cz-no" title="${esc(x.error || '')}">${names[c]} ✗</span>`));
+          const row = el('div', 'pp-sub cz-pc', `<b>${esc(pc.name)}</b>${pc.online ? '' : ' (desligado)'}: ${parts.join(' · ')}`);
+          const errs = Object.entries(pc.caps || {}).filter(([, x]) => !x.enc && x.error);
+          if (errs.length) row.appendChild(el('div', 'cz-err', errs.map(([c, x]) => `${names[c]}: ${esc(x.error)}`).join('<br>')));
+          body.appendChild(row);
+        }
         if (s.queued && !s.pc && s.items.some((i) => i.status === 'queued' && i.where === 'pc')) body.appendChild(el('div', 'pp-note', 'Há vídeos esperando o ajudante do PC. Abra o Zima Video Ajudante no PC (com o nível Médio ou Máximo) para começar.'));
         if (s.items.some((i) => i.status === 'queued' && i.preset === 'av1' && i.where !== 'pc') && !s.nasAv1 && !s.pc) body.appendChild(el('div', 'pp-note', 'O NAS não tem codificador de AV1: os vídeos em AV1 esperam o ajudante do PC.'));
         const acts = el('div', 'pp-actions');
@@ -119,6 +128,8 @@ const Compress = (() => {
           else if (i.status === 'done') info = `${fmtSize(i.origSize)} → ${fmtSize(i.newSize)} (−${Math.round((1 - i.newSize / i.origSize) * 100)}%)${i.vmaf ? ` · VMAF ${i.vmaf}` : ''}${i.enc ? ` · ${esc(i.enc)}` : ''}`;
           else if (i.status === 'skipped') info = esc(i.note || 'não ficou menor');
           else if (i.status === 'failed') info = esc(i.error || '');
+          // em qual PC (ou no NAS) foi feito, e quando terminou
+          if (['done', 'skipped', 'failed'].includes(i.status) && i.by) info += ` · ${i.by === 'NAS' ? 'no NAS' : `no PC “${esc(i.by)}”`}${i.finished ? ` · ${fmtDate(i.finished)}` : ''}`;
           else if (i.status === 'cancelled' && i.note) info = esc(i.note);
           else info = `${fmtSize(i.origSize)} → ~${fmtSize(i.est)} · ${i.where === 'pc' ? 'no PC' : i.where === 'nas' ? 'no NAS' : 'PC ou NAS'}`;
           row.innerHTML = `<div class="cz-qn"><span>${esc(stripExt(i.name))}</span><b>${label[i.status] || i.status}</b></div><div class="cz-qm">${esc(fmt)} · ${info}</div>${i.status === 'working' ? `<div class="pp-progress"><div style="width:${i.pct || 0}%"></div></div>` : ''}`;

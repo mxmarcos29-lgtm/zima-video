@@ -1921,6 +1921,7 @@ async function compressStatus() {
     queued: db.items.filter((i) => i.status === 'queued').length,
     working: db.items.filter((i) => i.status === 'working').length,
     pc: Date.now() - lastCompressWorker < 3 * 60000, nas: !!compressLocal, nasAv1: nasEncoders.has('libsvtav1'),
+    pcs: ((await loadJSON(WORKER_FILE, { tokens: [] })).tokens || []).filter((x) => x.caps).map((x) => ({ name: x.name, online: Date.now() - (x.lastSeen || 0) < 3 * 60000, caps: x.caps })),
   };
 }
 
@@ -1965,7 +1966,11 @@ async function compressJobForWorker(t) {
   const db = await loadCompress(); const now = Date.now();
   // trabalho que ficou parado (ajudante fechado no meio) volta para a fila
   for (const i of db.items) if (i.status === 'working' && i.by !== 'NAS' && now - (i.beat || 0) > 10 * 60000) { i.status = 'queued'; i.pct = 0; }
-  const it = db.items.find((i) => i.status === 'queued' && !compressExcluded(i.path) && (i.where === 'pc' || i.where === 'auto'));
+  const w = await loadJSON(WORKER_FILE, { tokens: [] });
+  const rec = (w.tokens || []).find((x) => x.hash === t.hash);
+  const caps = rec && rec.caps;
+  const can = (i) => !caps || !caps[COMPRESS_PRESETS[i.preset].codec] || !!caps[COMPRESS_PRESETS[i.preset].codec].enc;
+  const it = db.items.find((i) => i.status === 'queued' && !compressExcluded(i.path) && can(i) && (i.where === 'pc' || i.where === 'auto'));
   if (!it) return { none: true };
   const abs = resolveSafe(it.path);
   let info; try { info = await probe(abs); } catch { it.status = 'failed'; it.error = 'não consegui ler o vídeo'; saveCompress(); return { none: true }; }
@@ -3045,6 +3050,16 @@ const server = http.createServer(async (req, res) => {
       }
       case '/api/worker/result': await requireWorker(req); return sendJSON(res, await workerResult(await readBody(req, 64 * 1024 * 1024)));
       case '/api/worker/compress-job': { const t = await requireWorker(req); return sendJSON(res, await compressJobForWorker(t)); }
+      case '/api/worker/compress-caps': {
+        // o que este PC consegue comprimir (testado lá): o app mostra, e o servidor não manda o que ele não consegue
+        const t = await requireWorker(req); const b = await readBody(req);
+        const caps = {};
+        for (const c of ['av1', 'hevc', 'h264']) if (b[c]) caps[c] = { enc: b[c].enc ? String(b[c].enc).slice(0, 40) : null, label: b[c].label ? String(b[c].label).slice(0, 60) : null, error: b[c].error ? String(b[c].error).slice(0, 300) : null };
+        const w = await loadJSON(WORKER_FILE, { tokens: [] });
+        const rec = (w.tokens || []).find((x) => x.hash === t.hash);
+        if (rec) { rec.caps = caps; rec.capsAt = Date.now(); await saveJSON(WORKER_FILE, w); }
+        return sendJSON(res, { ok: true });
+      }
       case '/api/worker/compress-progress': {
         await requireWorker(req); const b = await readBody(req);
         const it = (await loadCompress()).items.find((i) => i.id === b.id);

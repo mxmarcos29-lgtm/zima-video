@@ -37,8 +37,10 @@ except Exception:  # pragma: no cover
     psutil = None
 
 GPU_ENC = {'av1': ['av1_amf', 'av1_nvenc', 'av1_qsv'], 'hevc': ['hevc_amf', 'hevc_nvenc', 'hevc_qsv'], 'h264': ['h264_amf', 'h264_nvenc', 'h264_qsv']}
-CPU_ENC = {'av1': 'libsvtav1', 'hevc': 'libx265', 'h264': 'libx264'}
+# pelo processador: primeiro o mais rápido/eficiente; os outros são reserva (alguns ffmpeg não têm todos)
+CPU_ENC = {'av1': ['libsvtav1', 'libaom-av1', 'librav1e'], 'hevc': ['libx265'], 'h264': ['libx264']}
 ENC_NAMES = {'amf': 'placa AMD', 'nvenc': 'placa NVIDIA', 'qsv': 'Intel Quick Sync', 'libsvtav1': 'processador (SVT-AV1)',
+             'libaom-av1': 'processador (libaom)', 'librav1e': 'processador (rav1e)',
              'libx265': 'processador (x265)', 'libx264': 'processador (x264)'}
 # faixa de busca do "q" (escala tipo CRF: maior = arquivo menor) e ponto de partida relativo ao alvo do servidor
 Q_RANGE = {'av1': (14, 55), 'hevc': (12, 38), 'h264': (12, 36)}
@@ -46,6 +48,16 @@ MIN_SAVING = 0.15       # pula se ficaria menos de 15% menor
 MAX_STEPS = 6           # medições na busca de qualidade
 LOW_MARGIN = 3.0        # os 5% piores momentos podem ficar no máximo 3 pontos abaixo do alvo
 MAX_ABOVE = 10          # o ajuste não passa de "típico do nível + 10" (o VMAF quase não pune perda de grão de filme)
+
+
+def explain_ff_error(text, rc=None):
+    """A linha do ffmpeg que realmente explica a falha (a última costuma ser genérica: "Nothing was written…")."""
+    lines = [re.sub(r'^\[[^\]]*@ 0x[0-9a-f]+\]\s*', '', x).strip() for x in text.strip().splitlines() if x.strip()]
+    generic = re.compile(r'Nothing was written|Error while opening encoder|Conversion failed|Could not open encoder before EOF|Terminating thread|Task finished', re.I)
+    useful = re.compile(r'error|fail|unknown|not (supported|available|found|initiali)|invalid|unsupported|could not|cannot|no device|DLL|driver', re.I)
+    best = [x for x in lines if useful.search(x) and not generic.search(x)]
+    pick = best[0] if best else next((x for x in reversed(lines) if not generic.search(x)), lines[-1] if lines else f'código {rc}')
+    return pick[:180]
 
 
 def enc_label(enc):
@@ -64,8 +76,13 @@ def venc_args(enc, codec, q, gop=240, variant=0, fast=False, best=False, src10=F
     # 10 bits só no modo caprichado ou quando o vídeo já é 10 bits (HDR): no processador custa ~30% de tempo
     pix = 'yuv420p10le' if (best or src10) else 'yuv420p'
     if enc == 'libsvtav1':
-        return ['-c:v', enc, '-crf', str(q), '-preset', '6' if best else '8', '-g', g, '-pix_fmt', pix,
-                '-svtav1-params', 'tune=0' + (':enable-overlays=1' if best else '')]
+        out = ['-c:v', enc, '-crf', str(q), '-preset', '6' if best else '8', '-g', g, '-pix_fmt', pix]
+        if variant == 0: out += ['-svtav1-params', 'tune=0' + (':enable-overlays=1' if best else '')]
+        return out
+    if enc == 'libaom-av1':
+        return ['-c:v', enc, '-crf', str(q), '-b:v', '0', '-cpu-used', '4' if best else '6', '-row-mt', '1', '-tiles', '2x2', '-g', g, '-pix_fmt', pix]
+    if enc == 'librav1e':
+        return ['-c:v', enc, '-qp', str(min(255, q * 4)), '-speed', '6' if best else '8', '-g', g, '-pix_fmt', pix]
     if enc == 'libx265':
         return ['-c:v', enc, '-crf', str(q), '-preset', 'fast' if fast else 'medium', '-tag:v', 'hvc1', '-pix_fmt', pix,
                 '-x265-params', f'log-level=error:aq-mode=3:no-sao=1:keyint={g}']
@@ -108,6 +125,7 @@ class Compressor:
         self.level = 'maximo'
         self.ff = None
         self.ok_enc = {}           # (codificador, formato) → variante que funciona neste PC (ou None)
+        self.enc_err = {}          # (codificador, formato) → por que falhou no teste
         self.has_vmaf = None
         self.thread = None
         self._stop = threading.Event()
@@ -194,14 +212,18 @@ class Compressor:
         if key not in self.ok_enc:
             self.ok_enc[key] = None
             for variant in (0, 1):
-                cmd = [self.ff, '-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=s=640x360:r=25:d=0.6', '-frames:v', '12']
+                # 1280x720: o AV1 das placas AMD recusa alturas que não são múltiplas de 16 (ex.: 360)
+                cmd = [self.ff, '-hide_banner', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=s=1280x720:r=25:d=0.5', '-frames:v', '10']
                 cmd += venc_args(enc, codec, 30, 50, variant) + ['-f', 'null', '-']
                 try:
-                    ok = subprocess.run(cmd, capture_output=True, timeout=60, creationflags=NOWINDOW).returncode == 0
-                except Exception:
-                    ok = False
+                    r = subprocess.run(cmd, capture_output=True, timeout=90, creationflags=NOWINDOW)
+                    ok = r.returncode == 0
+                    if not ok:
+                        self.enc_err[key] = explain_ff_error(r.stderr.decode('utf-8', 'replace'), r.returncode)
+                except Exception as e:
+                    ok = False; self.enc_err[key] = str(e)[:160]
                 if ok:
-                    self.ok_enc[key] = variant; break
+                    self.ok_enc[key] = variant; self.enc_err.pop(key, None); break
         return self.ok_enc[key]
 
     def pick(self, codec, force_cpu=False):
@@ -210,9 +232,24 @@ class Compressor:
                 v = self._variant(enc, codec)
                 if v is not None:
                     return enc, v
-        cpu = CPU_ENC[codec]
-        v = self._variant(cpu, codec)
-        return (cpu, v) if v is not None else (None, None)
+        for cpu in CPU_ENC[codec]:
+            v = self._variant(cpu, codec)
+            if v is not None:
+                return cpu, v
+        return None, None
+
+    def why_not(self, codec):
+        """Por que nenhum codificador funcionou (para a mensagem de erro)."""
+        encs = (GPU_ENC.get(codec, []) if self.use_gpu else []) + CPU_ENC[codec]
+        return '; '.join(f'{e}: {self.enc_err[(e, codec)]}' for e in encs if (e, codec) in self.enc_err) or 'sem detalhes'
+
+    def capabilities(self):
+        """O que este PC consegue comprimir (o app mostra e o servidor não manda o que ele não consegue)."""
+        caps = {}
+        for codec in ('av1', 'hevc', 'h264'):
+            enc, _ = self.pick(codec)
+            caps[codec] = {'enc': enc, 'label': enc_label(enc) if enc else None, 'error': None if enc else self.why_not(codec)[:300]}
+        return caps
 
     def _vmaf_ok(self):
         if self.has_vmaf is None:
@@ -226,7 +263,17 @@ class Compressor:
     # --- laço
     def _run(self):
         self.ff = ffmpeg_path()
+        caps_sent = 0
         while not self._stop.is_set():
+            if self.enabled and time.time() - caps_sent > 1800:
+                try:
+                    caps = self.capabilities()
+                    self._api('POST', '/api/worker/compress-caps', json=caps)
+                    caps_sent = time.time()
+                    for c, x in caps.items():
+                        self.say(f'Compressão {c.upper()}: ' + (f'pela {x["label"]}' if x['enc'] else f'indisponível ({x["error"]})'))
+                except Exception:
+                    pass
             if not self.allowed():
                 self._sleep(5); continue
             try:
@@ -368,7 +415,7 @@ class Compressor:
         spec = job['spec']; v = spec['v']; codec = v['codec']
         enc, variant = self.pick(codec, force_cpu)
         if not enc:
-            raise RuntimeError(f'este PC não tem codificador para {codec.upper()}')
+            raise RuntimeError(f'este PC não conseguiu usar nenhum codificador de {codec.upper()} ({self.why_not(codec)})')
         self.current = {'name': job['name'], 'pct': 0, 'enc': enc_label(enc), 'stage': 'preparando', 'speed': '', 'eta': None,
                         'codec': codec, 'size': job.get('size'), 'started': time.time(), 'vmaf': None, 'q': None}
         self.emit('compress', self.current)
