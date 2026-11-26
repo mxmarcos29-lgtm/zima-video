@@ -1058,6 +1058,9 @@ body.cf-light .thumb video.pv.on, body.cf-strong .thumb video.pv.on { opacity: .
 .cz-o.on { border-color: var(--accent); background: rgba(124,92,255,.16); }
 .cz-check { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; color: var(--muted); margin: 10px 0; cursor: pointer; }
 .cz-check input { accent-color: var(--accent); margin-top: 2px; }
+.cz-min input[type=range] { width: 100%; accent-color: var(--accent); margin: 6px 0 2px; }
+.cz-min .cz-minv { color: var(--text); }
+.cz-min.off { opacity: .55; }
 .cz-est { margin: 10px 0; }
 .cz-big { font-size: 15px; font-weight: 600; }
 .cz-save { color: #3ccf88; font-weight: 600; margin: 2px 0 6px; }

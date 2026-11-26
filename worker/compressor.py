@@ -442,15 +442,16 @@ class Compressor:
                         except Exception: pass
                 self.current.update(vmaf=round(vmaf, 1), q=q)
                 saving = 1 - ratio
-                if v.get('force') and (saving < MIN_SAVING or not reached):
+                min_saving = float(v.get('minSave', MIN_SAVING))   # escolhida no app (slider)
+                if v.get('force') and (saving < min_saving or not reached):
                     # "comprimir mesmo se não atingir o padrão": não pula. Se nenhum ajuste chegou no alvo, usa o
                     # ajuste típico do nível (como sem a medição); o servidor só troca se ficar menor que o original.
                     if not reached:
                         q = start_q(enc, codec, v['crf'])
                         vmaf = None; self.current.update(vmaf=None, q=q)  # a nota medida era de outro ajuste
                     self.say(f'   não atingiu o padrão, mas comprimindo mesmo assim (opção marcada no app): ajuste {q}')
-                elif saving < MIN_SAVING:
-                    note = (f'não compensa: para manter a qualidade (VMAF {vmaf:.0f}) ficaria só {max(0, saving) * 100:.0f}% menor'
+                elif saving < min_saving:
+                    note = (f'não compensa: para manter a qualidade (VMAF {vmaf:.0f}) ficaria só {max(0, saving) * 100:.0f}% menor (mínimo escolhido: {min_saving * 100:.0f}%)'
                             if reached else f'não compensa: nem com o ajuste de mais qualidade chegou no alvo (VMAF {vmaf:.0f})')
                     self.skipped += 1
                     self.say(f'• {job["name"]}: {note}')
